@@ -168,6 +168,7 @@ button.ghost {
 
 .insight-body {
   margin: 0;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
   color: var(--muted);
   line-height: 1.5;
   white-space: pre-line;
