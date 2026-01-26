@@ -1,11 +1,13 @@
-server:
-  port: 8000
 spring:
   datasource:
-    url: ${DB_URL:${SPRING_DATASOURCE_URL:}}
-    username: ${DB_USERNAME:${SPRING_DATASOURCE_USERNAME:}}
-    password: ${DB_PASSWORD:${SPRING_DATASOURCE_PASSWORD:}}
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: org.postgresql.Driver
+
+server:
+  port: ${SERVER_PORT:8080}
+
 logging:
   level:
     root: ${FIM_LOG_LEVEL:INFO}

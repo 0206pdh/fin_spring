@@ -10,35 +10,47 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.finintel.app.config.AppSettings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @Component
 public class LlmClient {
     private static final Logger logger = LoggerFactory.getLogger(LlmClient.class);
-    private final AppSettings settings;
     private final ObjectMapper mapper;
     private final HttpClient httpClient;
+    private final String openaiApiKey;
+    private final String openaiModel;
+    private final String openaiBaseUrl;
+    private final int llmTimeoutSec;
 
-    public LlmClient(AppSettings settings, ObjectMapper mapper) {
-        this.settings = settings;
+    public LlmClient(
+        ObjectMapper mapper,
+        @Value("${FIM_OPENAI_API_KEY:${OPENAI_API_KEY:}}") String openaiApiKey,
+        @Value("${FIM_OPENAI_MODEL:${OPENAI_MODEL:gpt-4o-mini}}") String openaiModel,
+        @Value("${FIM_OPENAI_BASE_URL:${OPENAI_BASE_URL:https://api.openai.com/v1}}") String openaiBaseUrl,
+        @Value("${FIM_LLM_TIMEOUT_SEC:${LLM_TIMEOUT_SEC:30}}") String llmTimeoutSec
+    ) {
         this.mapper = mapper;
+        this.openaiApiKey = openaiApiKey;
+        this.openaiModel = openaiModel;
+        this.openaiBaseUrl = openaiBaseUrl;
+        this.llmTimeoutSec = parseTimeout(llmTimeoutSec, 30);
         this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(settings.getLlmTimeoutSec()))
+            .connectTimeout(Duration.ofSeconds(this.llmTimeoutSec))
             .build();
-        String keyStatus = (settings.getOpenaiApiKey() != null && !settings.getOpenaiApiKey().isBlank()) ? "present" : "missing";
-        logger.info("LLM config loaded base_url={} model={} api_key={}", settings.getOpenaiBaseUrl(), settings.getOpenaiModel(), keyStatus);
+        String keyStatus = (this.openaiApiKey != null && !this.openaiApiKey.isBlank()) ? "present" : "missing";
+        logger.info("LLM config loaded base_url={} model={} api_key={}", this.openaiBaseUrl, this.openaiModel, keyStatus);
     }
 
     public Map<String, Object> chat(List<Map<String, String>> messages) {
-        String baseUrl = settings.getOpenaiBaseUrl();
-        String model = settings.getOpenaiModel();
-        String apiKey = settings.getOpenaiApiKey();
+        String baseUrl = openaiBaseUrl;
+        String model = openaiModel;
+        String apiKey = openaiApiKey;
 
         Map<String, Object> payload = new HashMap<>();
         payload.put("model", model);
@@ -49,7 +61,7 @@ public class LlmClient {
             String body = mapper.writeValueAsString(payload);
             HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl.replaceAll("/+$", "") + "/chat/completions"))
-                .timeout(Duration.ofSeconds(settings.getLlmTimeoutSec()))
+                .timeout(Duration.ofSeconds(llmTimeoutSec))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body));
 
@@ -104,6 +116,17 @@ public class LlmClient {
             } catch (IOException nested) {
                 throw new IllegalStateException("Failed to parse JSON content", nested);
             }
+        }
+    }
+
+    private static int parseTimeout(String rawValue, int fallback) {
+        if (rawValue == null || rawValue.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(rawValue.trim());
+        } catch (NumberFormatException ex) {
+            return fallback;
         }
     }
 
