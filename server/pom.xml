@@ -47,11 +47,22 @@
   </dependencies>
   <build>
     <plugins>
+
+      <!-- ✅ Spring Boot 실행 가능한 JAR 생성 -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
         <version>${spring-boot.version}</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
+
+      <!-- Java 컴파일 설정 -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
@@ -63,4 +74,5 @@
       </plugin>
     </plugins>
   </build>
+
 </project>
