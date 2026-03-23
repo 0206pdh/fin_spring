@@ -1,0 +1,107 @@
+version: "3.9"
+
+# Financial Event-Driven Market Impact System — Full Stack
+#
+# Services:
+#   postgres  — TimescaleDB + pgvector (time-series + semantic search)
+#   redis     — ARQ job queue + API response cache
+#   api       — FastAPI application server
+#   worker    — ARQ async worker (LLM normalize + rule engine score)
+#
+# Why this composition?
+#   - postgres: single DB for relational + time-series + vector (no extra services)
+#   - redis: dual-purpose (queue + cache) keeps infra minimal
+#   - api + worker are separate processes so LLM processing never blocks HTTP
+#
+# Start: docker compose up --build
+# Migrations: docker compose run --rm api alembic upgrade head
+# Worker only: docker compose up worker
+
+services:
+
+  postgres:
+    image: timescale/timescaledb-ha:pg16
+    # timescaledb-ha includes pgvector extension pre-installed
+    container_name: fim_postgres
+    environment:
+      POSTGRES_USER: fim
+      POSTGRES_PASSWORD: fim_secret
+      POSTGRES_DB: fim
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/home/postgres/pgdata/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fim -d fim"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: fim_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fim_api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://fim:fim_secret@postgres:5432/fim
+      REDIS_URL: redis://redis:6379/0
+      SCHEDULER_ENABLED: "true"
+      SCHEDULER_INTERVAL_MINUTES: "15"
+      LLM_PROVIDER: ${LLM_PROVIDER:-local}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8001/v1}
+      LLM_MODEL: ${LLM_MODEL:-mistral}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      FIM_LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fim_worker
+    command: arq app.worker.WorkerSettings
+    environment:
+      DATABASE_URL: postgresql://fim:fim_secret@postgres:5432/fim
+      REDIS_URL: redis://redis:6379/0
+      LLM_PROVIDER: ${LLM_PROVIDER:-local}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8001/v1}
+      LLM_MODEL: ${LLM_MODEL:-mistral}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      FIM_LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

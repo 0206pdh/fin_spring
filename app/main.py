@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -32,8 +33,7 @@ from app.store.event_store import (
     save_scored,
     sector_heatmap,
 )
-
-app = FastAPI(title="Event-FX-Sector Intelligence")
+from app.ws_manager import manager as ws_manager
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -41,13 +41,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app.api")
 
-app.mount("/static", StaticFiles(directory="app/ui"), name="static")
 
-
-@app.on_event("startup")
-def _startup() -> None:
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Startup: init DB + scheduler. Shutdown: stop scheduler."""
     init_db()
+    if settings.scheduler_enabled:
+        from app.scheduler import start_scheduler
+        start_scheduler(interval_minutes=settings.scheduler_interval_minutes)
+        logger.info("Scheduler enabled interval=%dm", settings.scheduler_interval_minutes)
     logger.info("Server running at http://localhost:8000")
+    yield
+    if settings.scheduler_enabled:
+        from app.scheduler import stop_scheduler
+        stop_scheduler()
+
+
+app = FastAPI(title="Event-FX-Sector Intelligence", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="app/ui"), name="static")
 
 
 @app.get("/")
@@ -57,7 +68,77 @@ def index() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "ws_connections": ws_manager.connection_count}
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — real-time pipeline events
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/pipeline")
+async def pipeline_ws(websocket: WebSocket) -> None:
+    """WebSocket endpoint: clients receive scored event notifications in real-time.
+
+    Message format:
+        {"type": "event_scored", "data": {"raw_event_id": "...", "event_type": "...", ...}}
+        {"type": "heatmap_updated", "data": {"Energy": 1.2, ...}}
+        {"type": "ping", "data": {}}
+    """
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # Keep-alive: client may send "ping"
+            msg = await websocket.receive_text()
+            if msg == "ping":
+                await websocket.send_text('{"type":"pong","data":{}}')
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+
+
+# ---------------------------------------------------------------------------
+# Async pipeline enqueue (non-blocking)
+# ---------------------------------------------------------------------------
+
+@app.post("/pipeline/enqueue")
+async def pipeline_enqueue(
+    category: str | None = None,
+    limit_per_category: int = 10,
+) -> dict:
+    """Enqueue a pipeline batch into ARQ worker queue (returns immediately).
+
+    Phase 1 key endpoint: replaces blocking /pipeline/run.
+    Load test shows P95 latency drops from ~45s → ~12ms after this change.
+    See docs/load-tests/phase1-sync-vs-async.md
+    """
+    try:
+        from app.config import settings as _s
+        from arq import create_pool
+        from arq.connections import RedisSettings
+
+        pool = await create_pool(RedisSettings.from_dsn(_s.redis_url))
+        job = await pool.enqueue_job("pipeline_batch_job", category, limit_per_category)
+        await pool.aclose()
+        return {"status": "enqueued", "job_id": job.job_id if job else None}
+    except Exception as exc:
+        logger.exception("Enqueue failed")
+        raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
+
+
+@app.post("/events/enqueue_one")
+async def enqueue_one(raw_event_id: str) -> dict:
+    """Enqueue normalization for a single raw event (non-blocking)."""
+    try:
+        from app.config import settings as _s
+        from arq import create_pool
+        from arq.connections import RedisSettings
+
+        pool = await create_pool(RedisSettings.from_dsn(_s.redis_url))
+        job = await pool.enqueue_job("normalize_job", raw_event_id)
+        await pool.aclose()
+        return {"status": "enqueued", "job_id": job.job_id if job else None}
+    except Exception as exc:
+        logger.exception("Enqueue one failed")
+        raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
 
 
 @app.get("/categories")
@@ -196,12 +277,22 @@ def pipeline_run_one(raw_event_id: str) -> dict[str, int]:
 
 @app.get("/timeline")
 def timeline(limit: int = 50) -> list[dict[str, object]]:
-    return list_timeline(limit=limit)
+    from app.store.cache import get_cached
+    return get_cached(
+        key=f"timeline:v1:{limit}",
+        ttl=settings.cache_timeline_ttl,
+        db_fn=lambda: list_timeline(limit=limit),
+    )
 
 
 @app.get("/heatmap")
 def heatmap() -> dict[str, float]:
-    return sector_heatmap()
+    from app.store.cache import get_cached
+    return get_cached(
+        key="heatmap:v1",
+        ttl=settings.cache_heatmap_ttl,
+        db_fn=sector_heatmap,
+    )
 
 
 @app.get("/graph")
@@ -257,6 +348,17 @@ def event_insight(raw_event_id: str) -> dict[str, str]:
         "fx_reason": fx_reason,
         "heatmap_reason": heatmap_reason,
     }
+
+
+@app.get("/events/eval/report")
+def eval_report() -> list[dict]:
+    """Return LLM consistency report per event_type (Phase 2).
+
+    Shows: classification consistency rate + avg confidence per event_type.
+    Low consistency rate flags event_types where LLM is unreliable.
+    """
+    from app.llm.evaluator import get_consistency_report
+    return get_consistency_report()
 
 
 def _news_summary(payload: dict) -> str:

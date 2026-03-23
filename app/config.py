@@ -39,5 +39,25 @@ class Settings(BaseSettings):
     # Ingestion endpoints. Override with JSON string in FIM_RAPIDAPI_ENDPOINTS.
     rapidapi_endpoints_json: str = ""
 
+    # Redis (ARQ job queue + API cache)
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        validation_alias=AliasChoices("REDIS_URL", "FIM_REDIS_URL"),
+    )
+
+    # Scheduler
+    scheduler_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SCHEDULER_ENABLED", "FIM_SCHEDULER_ENABLED"),
+    )
+    scheduler_interval_minutes: int = Field(
+        default=15,
+        validation_alias=AliasChoices("SCHEDULER_INTERVAL_MINUTES", "FIM_SCHEDULER_INTERVAL_MINUTES"),
+    )
+
+    # Cache TTL (seconds)
+    cache_heatmap_ttl: int = 30
+    cache_timeline_ttl: int = 15
+
 
 settings = Settings()
