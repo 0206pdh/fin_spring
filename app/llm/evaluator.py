@@ -41,26 +41,25 @@ EXPECTED_RISK_SIGNAL: dict[str, str] = {
 
 def ensure_eval_table() -> None:
     """Create llm_eval_log table if not exists."""
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS llm_eval_log (
-            id SERIAL PRIMARY KEY,
-            raw_event_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            risk_signal TEXT NOT NULL,
-            expected_risk_signal TEXT,
-            confidence FLOAT NOT NULL,
-            is_consistent BOOLEAN NOT NULL,
-            provider TEXT NOT NULL,
-            model TEXT NOT NULL,
-            evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS llm_eval_log (
+                id SERIAL PRIMARY KEY,
+                raw_event_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                risk_signal TEXT NOT NULL,
+                expected_risk_signal TEXT,
+                confidence FLOAT NOT NULL,
+                is_consistent BOOLEAN NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
         )
-        """
-    )
-    conn.commit()
-    conn.close()
+        conn.commit()
 
 
 def log_eval(
@@ -82,18 +81,17 @@ def log_eval(
         )
 
     try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO llm_eval_log
-            (raw_event_id, event_type, risk_signal, expected_risk_signal, confidence, is_consistent, provider, model)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (raw_event_id, event_type, risk_signal, expected, confidence, is_consistent, provider, model),
-        )
-        conn.commit()
-        conn.close()
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO llm_eval_log
+                (raw_event_id, event_type, risk_signal, expected_risk_signal, confidence, is_consistent, provider, model)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (raw_event_id, event_type, risk_signal, expected, confidence, is_consistent, provider, model),
+            )
+            conn.commit()
     except Exception as exc:
         logger.error("eval log write failed: %s", exc)
 
@@ -102,23 +100,22 @@ def get_consistency_report() -> list[dict]:
     """Return consistency rate per event_type over the last 100 evals."""
     try:
         from psycopg.rows import dict_row
-        conn = get_db()
-        cur = conn.cursor(row_factory=dict_row)
-        cur.execute(
-            """
-            SELECT
-                event_type,
-                COUNT(*) AS total,
-                SUM(CASE WHEN is_consistent THEN 1 ELSE 0 END) AS consistent,
-                ROUND(AVG(confidence)::numeric, 3) AS avg_confidence
-            FROM llm_eval_log
-            WHERE evaluated_at > NOW() - INTERVAL '7 days'
-            GROUP BY event_type
-            ORDER BY total DESC
-            """
-        )
-        rows = cur.fetchall()
-        conn.close()
+        with get_db() as conn:
+            cur = conn.cursor(row_factory=dict_row)
+            cur.execute(
+                """
+                SELECT
+                    event_type,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN is_consistent THEN 1 ELSE 0 END) AS consistent,
+                    ROUND(AVG(confidence)::numeric, 3) AS avg_confidence
+                FROM llm_eval_log
+                WHERE evaluated_at > NOW() - INTERVAL '7 days'
+                GROUP BY event_type
+                ORDER BY total DESC
+                """
+            )
+            rows = cur.fetchall()
         return [
             {
                 "event_type": r["event_type"],

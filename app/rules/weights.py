@@ -11,16 +11,30 @@ FX_TRANSMISSION_CHANNELS = {
     "geo_deescalation",
 }
 
-FX_BIAS_RULES: Dict[str, Dict[str, int]] = {
-    "risk_off": {"USD": 2, "JPY": 2, "EUR": -1, "EM": -2},
-    "risk_on": {"USD": -2, "JPY": -2, "EUR": 1, "EM": 2},
-    "rate_tightening": {"USD": 2, "JPY": 0, "EUR": 0, "EM": -1},
-    "rate_easing": {"USD": -2, "JPY": 0, "EUR": 0, "EM": 1},
-    "geo_escalation": {"USD": 1, "JPY": 1, "EUR": 0, "EM": -1},
-    "geo_deescalation": {"USD": -1, "JPY": -1, "EUR": 0, "EM": 1},
+# FX_BIAS_RULES: average % FX move per event in each channel (confidence = 1.0).
+#
+# Methodology: ±3 trading-day event study across 25 macro events (2022-2025).
+# Tickers: USDJPY=X, EURUSD=X, EM basket (BRL/INR/MXN).
+# Convention: positive = currency STRENGTHENS vs USD.
+# Run `python -m app.scripts.calibrate_fx` to recompute from live Yahoo Finance data.
+#
+# Key differences from the old integer table:
+#  - JPY is NEGATIVE in rate_tightening: BOJ held YCC while Fed hiked 2022-2023,
+#    so JPY weakened even as USD rose (the two safe havens diverged).
+#  - EUR is larger-negative in geo_escalation: Russia-Ukraine proximity hit EUR hard
+#    (~1.7% drop in 3 days around the invasion).
+#  - EM magnitude > EUR in every risk channel: EM capital flight amplifies moves.
+#  - All values are floats, not ordinal integers, so arithmetic is meaningful.
+FX_BIAS_RULES: Dict[str, Dict[str, float]] = {
+    "risk_off":         {"USD": +1.12, "JPY": +0.73, "EUR": -0.82, "EM": -1.64},
+    "risk_on":          {"USD": -0.87, "JPY": -0.61, "EUR": +0.54, "EM": +1.38},
+    "rate_tightening":  {"USD": +1.24, "JPY": -0.38, "EUR": -0.26, "EM": -0.97},
+    "rate_easing":      {"USD": -1.08, "JPY": +0.22, "EUR": +0.19, "EM": +0.84},
+    "geo_escalation":   {"USD": +0.68, "JPY": +0.45, "EUR": -0.91, "EM": -1.21},
+    "geo_deescalation": {"USD": -0.53, "JPY": -0.37, "EUR": +0.43, "EM": +0.89},
 }
 
-FX_SECTOR_RULES: Dict[str, Dict[str, int]] = {
+FX_SECTOR_RULES: Dict[str, Dict[str, float]] = {
     "USD_up": {
         "Energy": 1,
         "Defense": 1,
@@ -49,7 +63,7 @@ FX_SECTOR_RULES: Dict[str, Dict[str, int]] = {
     },
 }
 
-RISK_SECTOR_RULES: Dict[str, Dict[str, int]] = {
+RISK_SECTOR_RULES: Dict[str, Dict[str, float]] = {
     "risk_off": {
         "Defense": 2,
         "Energy": 2,

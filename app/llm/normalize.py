@@ -1,18 +1,37 @@
 from __future__ import annotations
 
+import re
 from app.config import settings
 import logging
 
-from app.llm.mistral_client import MistralClient, _safe_json
+from app.llm.client import LLMClient, _safe_json
 from app.models import NormalizedEvent, RawEvent
 
+# ---------------------------------------------------------------------------
+# Analyst-grade system prompt (FinGPT-style)
+# ---------------------------------------------------------------------------
+
 SYSTEM_PROMPT = (
-    "You are an event normalizer for macro, geopolitics, and policy news. "
-    "Read the full input as one document and return a single JSON object "
-    "covering the overall event. Return a single valid JSON object with the "
-    "schema exactly as requested. Do not include any extra text before or "
-    "after the JSON. Always end the response with a closing brace }."
+    "You are a macro analyst at a Tier-1 investment bank covering cross-asset markets. "
+    "Your job is to classify economic and geopolitical events and assess their market impact "
+    "with the precision of a sell-side research note.\n\n"
+    "RATIONALE STANDARDS — every rationale MUST:\n"
+    "1. Cite at least one concrete data point: a percentage, basis-point move, dollar amount, "
+    "date, or named entity (e.g., 'Fed funds rate at 5.25-5.50%', '$2.1B fine', '25bps hike').\n"
+    "2. Name the transmission mechanism: how this event flows through to FX and equities "
+    "(e.g., 'higher CPI → hawkish Fed repricing → USD strength → EM currency pressure').\n"
+    "3. State a directional bias with a magnitude estimate where possible "
+    "(e.g., 'Energy sector faces 5-8% earnings headwind', 'USD/JPY likely to test 155').\n\n"
+    "FORBIDDEN phrases: 'sector pressure detected', 'market impact expected', "
+    "'uncertainty increases', 'could affect markets', 'may lead to volatility'.\n\n"
+    "Return a single valid JSON object with the schema exactly as requested. "
+    "Do not include any extra text before or after the JSON. "
+    "Always end the response with a closing brace }."
 )
+
+# ---------------------------------------------------------------------------
+# User prompt template with 3-sub-question CoT
+# ---------------------------------------------------------------------------
 
 USER_TEMPLATE = """
 Raw event title: {title}
@@ -21,7 +40,15 @@ Published at: {published_at}
 Category url: {category_url}
 Details: {details_text}
 
-Extract a normalized event JSON with this schema:
+Before writing the rationale, reason through these 3 questions internally:
+Q1 (Data): What concrete numbers, names, or dates appear in this article?
+           (e.g., specific percentages, dollar figures, named countries/companies, deadlines)
+Q2 (Mechanism): What is the step-by-step transmission channel from this event to markets?
+           (e.g., tariff → input cost rise → margin compression → sector rotation out of industrials)
+Q3 (Magnitude): How large is the likely impact? Is this a 1-2% move or a structural regime shift?
+           Reference historical comparables if relevant.
+
+Now extract a normalized event JSON with this schema:
 {{
   "event_type": "string",
   "policy_domain": "monetary|fiscal|geopolitics|industry",
@@ -39,20 +66,33 @@ Extract a normalized event JSON with this schema:
   "rationale": "string"
 }}
 
+Rationale format: Write 2-3 sentences in the voice of a Bloomberg sell-side note.
+Lead with the specific data point from Q1, trace the mechanism from Q2, conclude
+with the directional impact from Q3. Include at least one number (%, $, bps, or date).
+
+Example of a GOOD rationale:
+"The Fed's 25bps rate hold at 5.25-5.50% alongside revised 2024 dot-plot median of 4.6%
+(down from 5.1%) signals a pivot within 2 quarters. Transmission: lower terminal rate
+expectations → DXY weakness → EM local currency bonds become attractive. Energy and
+Financials face 3-5% multiple contraction as the risk-free rate anchor shifts lower."
+
+Example of a BAD rationale (forbidden):
+"The event may lead to market uncertainty. Sector pressure detected. Impact could be significant."
+
 Constraints:
 - Do not include extra keys beyond the schema.
 - Read the full input once (not per sentence or per paragraph).
 - Return exactly one JSON object for the overall event. Do not repeat keys.
 - Always end the response with a closing brace }}.
 - policy_domain must be one of: monetary, fiscal, geopolitics, industry.
- - risk_signal must be one of: risk_on, risk_off, neutral.
- - rate_signal must be one of: tightening, easing, none.
- - geo_signal must be one of: escalation, deescalation, none.
- - channels must be selected from: risk_off, risk_on, rate_tightening, rate_easing, geo_escalation, geo_deescalation.
- - confidence must be between 0 and 1.
- - regime must include risk_sentiment, volatility, and liquidity with the allowed values above.
- - keywords must be a short list of salient terms from the article.
-- rationale must explicitly justify why risk_signal and geo_signal are chosen based on concrete evidence.
+- risk_signal must be one of: risk_on, risk_off, neutral.
+- rate_signal must be one of: tightening, easing, none.
+- geo_signal must be one of: escalation, deescalation, none.
+- channels must be selected from: risk_off, risk_on, rate_tightening, rate_easing, geo_escalation, geo_deescalation.
+- confidence must be between 0 and 1.
+- regime must include risk_sentiment, volatility, and liquidity with the allowed values above.
+- keywords must be a short list of salient terms from the article.
+- rationale must contain at least one numeric token (%, $, bps, or a 4-digit year) and name the transmission channel.
 
 Risk assessment rules:
 - risk_signal is NOT determined only by event_type.
@@ -68,10 +108,6 @@ Geo assessment rules:
   * cross-border enforcement, bans, or coordinated actions are mentioned
 - geo_signal is none ONLY if the event is confined to a single country or company.
 
-Before producing the final JSON, internally evaluate:
-1. Is this event likely to increase uncertainty or regulatory pressure?
-2. Does it introduce downside risk to a sector or platform?
-3. Is the impact localized or global?
 - event_type must be one of:
   geopolitics_conflict, war_escalation, terror_attack, monetary_tightening,
   inflation_hot, banking_stress, trade_sanction, recession_signal,
@@ -84,25 +120,11 @@ Before producing the final JSON, internally evaluate:
   stimulus=risk_on, inflation_cooling=risk_on, earnings_positive=risk_on,
   ceasefire=risk_on, policy_stability=neutral, regulation_update=neutral.
 - If unsure, choose policy_stability and neutral signals.
-
-Example output (format only, values must be from allowed lists):
-{{
-  "event_type": "policy_stability",
-  "policy_domain": "industry",
-  "risk_signal": "neutral",
-  "rate_signal": "none",
-  "geo_signal": "none",
-  "channels": ["risk_off"],
-  "confidence": 0.6,
-  "regime": {{
-    "risk_sentiment": "neutral",
-    "volatility": "elevated",
-    "liquidity": "neutral"
-  }},
-  "keywords": ["policy", "markets"],
-  "rationale": "Article lacks clear macro shocks, so defaults to policy stability."
-}}
 """
+
+# ---------------------------------------------------------------------------
+# Signal mappings and allowed values
+# ---------------------------------------------------------------------------
 
 EVENT_TYPE_RISK_SIGNAL = {
     "geopolitics_conflict": "risk_off",
@@ -128,10 +150,31 @@ ALLOWED_RISK_SIGNALS = {"risk_on", "risk_off", "neutral"}
 ALLOWED_RATE_SIGNALS = {"tightening", "easing", "none"}
 ALLOWED_GEO_SIGNALS = {"escalation", "deescalation", "none"}
 
+# Rationale fallback phrase appended when LLM produces no numeric tokens.
+# Triggers the tests/test_normalize.py::test_rationale_number_validator assertion.
+_FALLBACK_NUMERIC_PHRASE = " (quantitative data unavailable for this event)"
+
+_NUMBER_PATTERN = re.compile(r"\d+")
+
 logger = logging.getLogger("app.llm")
+
 
 def _normalize_event_type(value: str) -> str:
     return value.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _validate_rationale(rationale: str) -> str:
+    """Ensure rationale contains at least one numeric token.
+
+    If not, appends a fallback phrase so downstream consumers can detect
+    low-quality rationales without crashing (they fail a regex check, not an exception).
+    """
+    if not rationale:
+        return rationale
+    if not _NUMBER_PATTERN.search(rationale):
+        logger.warning("rationale missing numeric token — appending fallback phrase")
+        return rationale + _FALLBACK_NUMERIC_PHRASE
+    return rationale
 
 
 def normalize_event(raw_event: RawEvent) -> NormalizedEvent:
@@ -143,8 +186,7 @@ def normalize_event(raw_event: RawEvent) -> NormalizedEvent:
         category_url=category_url,
         details_text=details_text,
     )
-    provider = (settings.llm_provider or "local").strip().lower()
-    client = MistralClient()
+    client = LLMClient()
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
@@ -176,20 +218,24 @@ def normalize_event(raw_event: RawEvent) -> NormalizedEvent:
     mapped_risk = EVENT_TYPE_RISK_SIGNAL.get(event_type)
     if risk_signal == "neutral" and mapped_risk:
         risk_signal = mapped_risk
+
     keywords = data.get("keywords") or []
-    rationale = str(data.get("rationale", "")).strip()
+    rationale = _validate_rationale(str(data.get("rationale", "")).strip())
     channels = data.get("channels") or []
     confidence = data.get("confidence", 0.6)
     regime = data.get("regime") or {}
+
     logger.info("LLM keywords: %s", keywords)
     logger.info("LLM rationale: %s", rationale if rationale else "(none)")
     logger.info("LLM channels: %s", channels)
     logger.info("LLM confidence: %s", confidence)
     logger.info("LLM regime: %s", regime)
+
     try:
         confidence_value = float(confidence) if confidence is not None else 0.6
     except (TypeError, ValueError):
         confidence_value = 0.6
+
     return NormalizedEvent(
         raw_event_id=raw_event.id,
         event_type=event_type,

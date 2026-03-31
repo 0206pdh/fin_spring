@@ -8,8 +8,9 @@ pydantic-settings==2.4.0
 requests==2.32.3
 python-dateutil==2.9.0.post0
 
-# PostgreSQL (psycopg3 binary)
+# PostgreSQL (psycopg3 binary + connection pool)
 psycopg[binary]==3.2.1
+psycopg-pool==3.2.3
 
 # Database migrations
 alembic==1.13.3
@@ -26,9 +27,9 @@ apscheduler==3.10.4
 openai==1.51.0
 langgraph==0.2.28
 
-# ML (kept for existing transformers usage)
-transformers==4.44.2
-torch==2.4.1
+
+# FX calibration (dev — not needed in production image)
+yfinance==0.2.54
 
 # Load testing (dev)
 locust==2.31.5

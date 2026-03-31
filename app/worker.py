@@ -11,12 +11,20 @@ Job flow:
     → normalize_job(ctx, raw_event_id)
       → score_job(ctx, raw_event_id)   (auto-enqueued after normalize)
         → broadcast "event_scored" via WebSocket manager
+
+Seed replay:
+  seed_replay_job (cron, every 8 minutes)
+    → picks one seed event with replayed_count < 3
+    → re-runs it through normalize → score
+    → increments replayed_count
+    → ensures the live demo always has recent scored data
 """
 from __future__ import annotations
 
 import logging
 
 from arq import ArqRedis
+from arq.cron import cron
 
 from app.ingest.raw_store import fetch_raw_event
 from app.llm.normalize import normalize_event
@@ -85,7 +93,7 @@ async def score_job(ctx: dict, raw_event_id: str) -> str:
 
 async def pipeline_batch_job(ctx: dict, category: str | None = None, limit: int = 10) -> dict:
     """Full pipeline batch: ingest → normalize → score (called by scheduler)."""
-    from app.ingest.apnews import fetch_raw_events
+    from app.ingest.bbc import fetch_raw_events
     from app.ingest.raw_store import save_raw_events
 
     logger.info("pipeline_batch_job start category=%s limit=%d", category, limit)
@@ -109,6 +117,91 @@ async def pipeline_batch_job(ctx: dict, category: str | None = None, limit: int 
     return {"fetched": len(events), "inserted": inserted, "enqueued": enqueued}
 
 
+async def seed_replay_job(ctx: dict) -> dict:
+    """Replay one seed event through the pipeline every 8 minutes.
+
+    Picks the seed event with the lowest replayed_count (up to cap=3) and
+    re-runs it through normalize → score → WS broadcast. This keeps the live
+    demo populated even when no fresh AP News articles are available.
+
+    replayed_count cap = 3: prevents infinite churn while ensuring every seed
+    event gets at least 3 passes (different LLM runs → slightly different
+    rationales, which demonstrates the system is live).
+    """
+    logger.info("seed_replay_job start")
+    try:
+        from app.store.db import get_db
+        from psycopg.rows import dict_row
+
+        with get_db() as conn:
+            cur = conn.cursor(row_factory=dict_row)
+            cur.execute(
+                """
+                SELECT id FROM seed_events
+                WHERE replayed_count < 3
+                ORDER BY replayed_count ASC, last_replayed_at ASC NULLS FIRST
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """
+            )
+            row = cur.fetchone()
+            if not row:
+                logger.info("seed_replay_job no eligible seed events (all at cap)")
+                return {"status": "no_eligible_seeds"}
+
+            seed_id = row["id"]
+            cur.execute(
+                """
+                UPDATE seed_events
+                SET replayed_count = replayed_count + 1,
+                    last_replayed_at = NOW()
+                WHERE id = %s
+                """,
+                (seed_id,),
+            )
+            conn.commit()
+
+        # Fetch the seed event as a raw_event and run through pipeline
+        raw = fetch_raw_event(seed_id)
+        if raw is None:
+            logger.warning("seed_replay_job seed not in raw_events id=%s", seed_id)
+            return {"status": "not_found", "id": seed_id}
+
+        normalized = normalize_event(raw)
+        save_normalized(normalized)
+        scored = score_event(normalized)
+        save_scored(scored)
+
+        # Broadcast update
+        try:
+            from app.ws_manager import manager
+            await manager.broadcast(
+                "event_scored",
+                {
+                    "raw_event_id": scored.raw_event_id,
+                    "event_type": scored.event_type,
+                    "risk_signal": scored.risk_signal,
+                    "fx_state": scored.fx_state,
+                    "total_score": scored.total_score,
+                },
+            )
+        except Exception as exc:
+            logger.warning("seed_replay WS broadcast failed: %s", exc)
+
+        try:
+            from app.store.cache import invalidate_pipeline_caches
+            invalidate_pipeline_caches()
+        except Exception as exc:
+            logger.debug("seed_replay cache invalidation skipped: %s", exc)
+
+        logger.info("seed_replay_job done id=%s total_score=%.2f", seed_id, scored.total_score)
+        return {"status": "replayed", "id": seed_id, "total_score": scored.total_score}
+
+    except Exception as exc:
+        logger.error("seed_replay_job failed: %s", exc)
+        return {"status": "error", "error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # ARQ WorkerSettings
 # ---------------------------------------------------------------------------
@@ -118,7 +211,10 @@ class WorkerSettings:
 
     Run with: arq app.worker.WorkerSettings
     """
-    functions = [normalize_job, score_job, pipeline_batch_job]
+    functions = [normalize_job, score_job, pipeline_batch_job, seed_replay_job]
+    cron_jobs = [
+        cron(seed_replay_job, minute={0, 8, 16, 24, 32, 40, 48, 56}),
+    ]
     redis_settings = None  # set at runtime from app.config
 
     @classmethod

@@ -1,0 +1,37 @@
+# Version control
+.git
+.gitignore
+
+# Frontend build artifacts and dependencies
+node_modules
+build
+dist
+src/Financial Dashboard Heatmap/node_modules
+src/Financial Time-Series Chart/node_modules
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+.eggs
+
+# Local data / dev artifacts
+app/data
+locust
+
+# Dev tooling
+.env
+.env.*
+*.log
+
+# Test artifacts
+.pytest_cache
+.coverage
+htmlcov
+
+# IDE
+.vscode
+.idea

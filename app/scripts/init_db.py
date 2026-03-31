@@ -6,13 +6,12 @@ from app.store.db import get_db, init_db
 
 
 def drop_tables() -> None:
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DROP TABLE IF EXISTS scored_events")
-    cur.execute("DROP TABLE IF EXISTS normalized_events")
-    cur.execute("DROP TABLE IF EXISTS raw_events")
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS scored_events")
+        cur.execute("DROP TABLE IF EXISTS normalized_events")
+        cur.execute("DROP TABLE IF EXISTS raw_events")
+        conn.commit()
 
 
 def main() -> None:

@@ -63,10 +63,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       SCHEDULER_ENABLED: "true"
       SCHEDULER_INTERVAL_MINUTES: "15"
-      LLM_PROVIDER: ${LLM_PROVIDER:-local}
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8001/v1}
-      LLM_MODEL: ${LLM_MODEL:-mistral}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       FIM_LOG_LEVEL: INFO
     depends_on:
@@ -87,10 +84,7 @@ services:
     environment:
       DATABASE_URL: postgresql://fim:fim_secret@postgres:5432/fim
       REDIS_URL: redis://redis:6379/0
-      LLM_PROVIDER: ${LLM_PROVIDER:-local}
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8001/v1}
-      LLM_MODEL: ${LLM_MODEL:-mistral}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       FIM_LOG_LEVEL: INFO
     depends_on:

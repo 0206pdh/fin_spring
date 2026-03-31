@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.ingest.raw_store import fetch_raw_event, fetch_unprocessed_raw_events, save_raw_events
-from app.ingest.apnews import fetch_article_details, fetch_raw_events, get_categories
+from app.ingest.bbc import fetch_article_details, fetch_raw_events, get_categories
 from app.llm.normalize import normalize_event
 from app.llm.insight import (
     build_analysis_reason,
@@ -66,7 +66,7 @@ def index() -> FileResponse:
     return FileResponse("app/ui/index.html")
 
 
-@app.get("/health")
+@app.get("/healthz")
 def health() -> dict[str, str]:
     return {"status": "ok", "ws_connections": ws_manager.connection_count}
 

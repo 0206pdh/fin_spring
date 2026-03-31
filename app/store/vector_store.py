@@ -29,31 +29,29 @@ EMBEDDING_DIM = 1536  # text-embedding-3-small
 def ensure_vector_extension() -> None:
     """Enable pgvector extension and create embeddings table."""
     from app.store.db import get_db
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS event_embeddings (
-                raw_event_id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                embedding vector({EMBEDDING_DIM}) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    with get_db() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS event_embeddings (
+                    raw_event_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    embedding vector({EMBEDDING_DIM}) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
             )
-            """
-        )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS event_embeddings_hnsw ON event_embeddings "
-            "USING hnsw (embedding vector_cosine_ops)"
-        )
-        conn.commit()
-        logger.info("pgvector extension and embeddings table ready")
-    except Exception as exc:
-        conn.rollback()
-        logger.warning("pgvector setup failed (extension may not be installed): %s", exc)
-    finally:
-        conn.close()
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS event_embeddings_hnsw ON event_embeddings "
+                "USING hnsw (embedding vector_cosine_ops)"
+            )
+            conn.commit()
+            logger.info("pgvector extension and embeddings table ready")
+        except Exception as exc:
+            conn.rollback()
+            logger.warning("pgvector setup failed (extension may not be installed): %s", exc)
 
 
 def get_embedding(text: str, openai_client: object) -> list[float]:
@@ -68,23 +66,21 @@ def get_embedding(text: str, openai_client: object) -> list[float]:
 def save_embedding(raw_event_id: str, title: str, embedding: list[float]) -> None:
     """Store embedding for a raw event."""
     from app.store.db import get_db
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            INSERT INTO event_embeddings (raw_event_id, title, embedding)
-            VALUES (%s, %s, %s::vector)
-            ON CONFLICT (raw_event_id) DO NOTHING
-            """,
-            (raw_event_id, title, str(embedding)),
-        )
-        conn.commit()
-    except Exception as exc:
-        conn.rollback()
-        logger.error("save_embedding failed raw_event_id=%s: %s", raw_event_id, exc)
-    finally:
-        conn.close()
+    with get_db() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO event_embeddings (raw_event_id, title, embedding)
+                VALUES (%s, %s, %s::vector)
+                ON CONFLICT (raw_event_id) DO NOTHING
+                """,
+                (raw_event_id, title, str(embedding)),
+            )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            logger.error("save_embedding failed raw_event_id=%s: %s", raw_event_id, exc)
 
 
 def check_duplicate(
@@ -99,30 +95,28 @@ def check_duplicate(
     from app.store.db import get_db
     from psycopg.rows import dict_row
 
-    conn = get_db()
-    cur = conn.cursor(row_factory=dict_row)
-    try:
-        cur.execute(
-            """
-            SELECT raw_event_id,
-                   1 - (embedding <=> %s::vector) AS similarity
-            FROM event_embeddings
-            ORDER BY embedding <=> %s::vector
-            LIMIT 1
-            """,
-            (str(embedding), str(embedding)),
-        )
-        row = cur.fetchone()
-        if row and row["similarity"] >= threshold:
-            logger.info(
-                "Duplicate detected similarity=%.3f existing=%s",
-                row["similarity"],
-                row["raw_event_id"],
+    with get_db() as conn:
+        cur = conn.cursor(row_factory=dict_row)
+        try:
+            cur.execute(
+                """
+                SELECT raw_event_id,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM event_embeddings
+                ORDER BY embedding <=> %s::vector
+                LIMIT 1
+                """,
+                (str(embedding), str(embedding)),
             )
-            return True, row["raw_event_id"]
-        return False, None
-    except Exception as exc:
-        logger.warning("check_duplicate failed: %s", exc)
-        return False, None
-    finally:
-        conn.close()
+            row = cur.fetchone()
+            if row and row["similarity"] >= threshold:
+                logger.info(
+                    "Duplicate detected similarity=%.3f existing=%s",
+                    row["similarity"],
+                    row["raw_event_id"],
+                )
+                return True, row["raw_event_id"]
+            return False, None
+        except Exception as exc:
+            logger.warning("check_duplicate failed: %s", exc)
+            return False, None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from app.llm.mistral_client import MistralClient
+from app.llm.client import LLMClient
 from app.llm.normalize import extract_details_text
 from app.models import NormalizedEvent, RawEvent, ScoredEvent
 
@@ -80,7 +80,7 @@ def summarize_news_ko(raw_event: RawEvent) -> str:
         logger.warning("Summarize KR: no text for raw_event_id=%s", raw_event.id)
         return ""
 
-    client = MistralClient()
+    client = LLMClient()
     messages = [
         {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
         {"role": "user", "content": SUMMARY_USER_TEMPLATE.format(text=text)},
@@ -149,7 +149,7 @@ def generate_analysis_ko(
     if not normalized and not scored:
         logger.warning("Generate analysis LLM: missing inputs")
         return ""
-    client = MistralClient()
+    client = LLMClient()
     messages = [
         {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
         {
@@ -234,7 +234,7 @@ def generate_heatmap_ko(
     top_gainers = ", ".join([f"{sector} {value:+.2f}" for sector, value in positives]) or "없음"
     top_losers = ", ".join([f"{sector} {value:+.2f}" for sector, value in negatives]) or "없음"
 
-    client = MistralClient()
+    client = LLMClient()
     messages = [
         {"role": "system", "content": HEATMAP_SYSTEM_PROMPT},
         {
@@ -295,7 +295,7 @@ def generate_fx_ko(
     if not scored:
         logger.warning("Generate fx LLM: missing scored")
         return ""
-    client = MistralClient()
+    client = LLMClient()
     messages = [
         {"role": "system", "content": FX_SYSTEM_PROMPT},
         {

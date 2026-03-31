@@ -1,114 +1,112 @@
 import { Treemap, ResponsiveContainer, Tooltip } from 'recharts';
-import { ChevronDown } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-interface StockData {
-  name: string;
-  ticker: string;
-  size: number;
-  change: number;
-  sector: string;
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface HeatmapData {
+  [sector: string]: number;
 }
 
-// Mock NIFTY 50 stock data
-const stockData: StockData[] = [
-  { name: 'Reliance Industries', ticker: 'RELIANCE', size: 1650000, change: 1.8, sector: 'Energy' },
-  { name: 'HDFC Bank', ticker: 'HDFCBANK', size: 1200000, change: -0.5, sector: 'Banking' },
-  { name: 'ICICI Bank', ticker: 'ICICIBANK', size: 780000, change: 2.3, sector: 'Banking' },
-  { name: 'Infosys', ticker: 'INFY', size: 720000, change: -1.2, sector: 'IT' },
-  { name: 'TCS', ticker: 'TCS', size: 1400000, change: 0.8, sector: 'IT' },
-  { name: 'ITC', ticker: 'ITC', size: 620000, change: -2.1, sector: 'FMCG' },
-  { name: 'Bharti Airtel', ticker: 'BHARTIARTL', size: 580000, change: 3.2, sector: 'Telecom' },
-  { name: 'Kotak Mahindra Bank', ticker: 'KOTAKBANK', size: 380000, change: 1.1, sector: 'Banking' },
-  { name: 'HUL', ticker: 'HINDUNILVR', size: 550000, change: -0.3, sector: 'FMCG' },
-  { name: 'State Bank of India', ticker: 'SBIN', size: 520000, change: 2.8, sector: 'Banking' },
-  { name: 'Axis Bank', ticker: 'AXISBANK', size: 340000, change: 1.5, sector: 'Banking' },
-  { name: 'Larsen & Toubro', ticker: 'LT', size: 480000, change: -1.8, sector: 'Infrastructure' },
-  { name: 'Asian Paints', ticker: 'ASIANPAINT', size: 310000, change: 0.4, sector: 'Consumer' },
-  { name: 'Wipro', ticker: 'WIPRO', size: 280000, change: -0.9, sector: 'IT' },
-  { name: 'Maruti Suzuki', ticker: 'MARUTI', size: 350000, change: 2.1, sector: 'Auto' },
-  { name: 'Bajaj Finance', ticker: 'BAJFINANCE', size: 420000, change: -2.5, sector: 'Finance' },
-  { name: 'Titan Company', ticker: 'TITAN', size: 290000, change: 1.9, sector: 'Consumer' },
-  { name: 'Tech Mahindra', ticker: 'TECHM', size: 180000, change: -1.4, sector: 'IT' },
-  { name: 'UltraTech Cement', ticker: 'ULTRACEMCO', size: 260000, change: 0.6, sector: 'Cement' },
-  { name: 'Sun Pharma', ticker: 'SUNPHARMA', size: 380000, change: 3.5, sector: 'Pharma' },
-  { name: 'Nestle India', ticker: 'NESTLEIND', size: 210000, change: -0.7, sector: 'FMCG' },
-  { name: 'Power Grid', ticker: 'POWERGRID', size: 190000, change: 1.3, sector: 'Utilities' },
-  { name: 'NTPC', ticker: 'NTPC', size: 170000, change: -1.1, sector: 'Energy' },
-  { name: 'Coal India', ticker: 'COALINDIA', size: 150000, change: 2.6, sector: 'Energy' },
-  { name: 'Tata Steel', ticker: 'TATASTEEL', size: 140000, change: -3.2, sector: 'Metals' },
-  { name: 'JSW Steel', ticker: 'JSWSTEEL', size: 130000, change: -2.8, sector: 'Metals' },
-  { name: 'Adani Ports', ticker: 'ADANIPORTS', size: 220000, change: 1.7, sector: 'Infrastructure' },
-  { name: 'Bajaj Auto', ticker: 'BAJAJ-AUTO', size: 160000, change: 0.9, sector: 'Auto' },
-  { name: 'Grasim', ticker: 'GRASIM', size: 120000, change: -0.4, sector: 'Diversified' },
-  { name: 'Shree Cement', ticker: 'SHREECEM', size: 110000, change: 1.2, sector: 'Cement' },
-];
+interface TimelineEvent {
+  title: string;
+  url: string;
+  published_at: string;
+  sector: string;
+  risk_signal: string;
+  rate_signal: string;
+  geo_signal: string;
+  fx_state: string;
+  sentiment: string;
+  total_score: number;
+}
 
-// Color interpolation function based on percentage change
-const getColor = (change: number): string => {
-  if (change >= 3) return '#10b981'; // Strong green
-  if (change >= 1.5) return '#34d399'; // Medium green
-  if (change >= 0.5) return '#6ee7b7'; // Light green
-  if (change >= -0.5) return '#374151'; // Dark gray (neutral)
-  if (change >= -1.5) return '#fb923c'; // Orange
-  if (change >= -2.5) return '#f87171'; // Light red
-  return '#ef4444'; // Strong red
-};
+interface TreemapNode {
+  name: string;
+  size: number;
+  score: number;
+}
 
-interface CustomizedContentProps {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function scoreToColor(score: number): string {
+  if (score >= 3) return '#10b981';
+  if (score >= 1.5) return '#34d399';
+  if (score >= 0.3) return '#6ee7b7';
+  if (score > -0.3) return '#374151';
+  if (score > -1.5) return '#fb923c';
+  if (score > -3) return '#f87171';
+  return '#ef4444';
+}
+
+
+function formatScore(score: number): string {
+  return score >= 0 ? `+${score.toFixed(2)}` : score.toFixed(2);
+}
+
+function timeAgo(isoString: string): string {
+  const diff = Date.now() - new Date(isoString).getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+// ---------------------------------------------------------------------------
+// Custom treemap cell
+// ---------------------------------------------------------------------------
+
+interface CellProps {
   x?: number;
   y?: number;
   width?: number;
   height?: number;
   name?: string;
-  change?: number;
+  score?: number;
 }
 
-const CustomizedContent = ({ x = 0, y = 0, width = 0, height = 0, name = '', change = 0 }: CustomizedContentProps) => {
-  const color = getColor(change);
-  const textColor = change >= -0.5 ? '#ffffff' : '#ffffff';
-  
-  // Only show text if rectangle is large enough
-  const showText = width > 60 && height > 30;
-  const showChange = width > 80 && height > 50;
+const SectorCell = ({ x = 0, y = 0, width = 0, height = 0, name = '', score = 0 }: CellProps) => {
+  const color = scoreToColor(score);
+  const showLabel = width > 55 && height > 28;
+  const showScore = width > 70 && height > 46;
 
   return (
     <g>
       <rect
-        x={x}
-        y={y}
-        width={width}
-        height={height}
-        style={{
-          fill: color,
-          stroke: '#1e293b',
-          strokeWidth: 2,
-        }}
+        x={x + 1}
+        y={y + 1}
+        width={width - 2}
+        height={height - 2}
+        style={{ fill: color, stroke: '#0f172a', strokeWidth: 2 }}
       />
-      {showText && (
+      {showLabel && (
         <>
           <text
             x={x + width / 2}
-            y={y + height / 2 - (showChange ? 6 : 0)}
+            y={y + height / 2 - (showScore ? 7 : 0)}
             textAnchor="middle"
-            fill={textColor}
-            fontSize={width > 100 ? 14 : 11}
+            fill="#ffffff"
+            fontSize={width > 100 ? 13 : 11}
             fontWeight="600"
             fontFamily="Inter, system-ui, sans-serif"
           >
             {name}
           </text>
-          {showChange && (
+          {showScore && (
             <text
               x={x + width / 2}
-              y={y + height / 2 + 14}
+              y={y + height / 2 + 13}
               textAnchor="middle"
-              fill={textColor}
-              fontSize={12}
+              fill="rgba(255,255,255,0.8)"
+              fontSize={11}
               fontFamily="Inter, system-ui, sans-serif"
-              opacity={0.9}
             >
-              {change > 0 ? '+' : ''}{change.toFixed(2)}%
+              {formatScore(score)}
             </text>
           )}
         </>
@@ -117,109 +115,248 @@ const CustomizedContent = ({ x = 0, y = 0, width = 0, height = 0, name = '', cha
   );
 };
 
-interface CustomTooltipProps {
-  active?: boolean;
-  payload?: Array<{
-    payload: {
-      name: string;
-      ticker: string;
-      change: number;
-      sector: string;
-    };
-  }>;
-}
+// ---------------------------------------------------------------------------
+// Main App
+// ---------------------------------------------------------------------------
 
-const CustomTooltip = ({ active, payload }: CustomTooltipProps) => {
-  if (active && payload && payload.length) {
-    const data = payload[0].payload;
-    return (
-      <div className="bg-slate-800 border border-slate-600 rounded px-3 py-2 shadow-lg">
-        <p className="text-white font-semibold text-sm">{data.ticker}</p>
-        <p className="text-slate-300 text-xs mt-0.5">{data.name}</p>
-        <p className={`text-sm font-semibold mt-1 ${data.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-          {data.change > 0 ? '+' : ''}{data.change.toFixed(2)}%
-        </p>
-        <p className="text-slate-400 text-xs mt-0.5">{data.sector}</p>
-      </div>
-    );
-  }
-  return null;
-};
+const API = '/api';
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/pipeline`;
+const REFRESH_MS = 30_000;
 
 export default function App() {
-  const [selectedIndex, setSelectedIndex] = useState('NIFTY-50');
+  const [heatmap, setHeatmap] = useState<HeatmapData>({});
+  const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [loading, setLoading] = useState(true);
+  const wsRef = useRef<WebSocket | null>(null);
 
-  // Transform data for treemap
-  const treeMapData = [{
-    name: 'root',
-    children: stockData.map(stock => ({
-      name: stock.ticker,
-      ticker: stock.ticker,
-      size: stock.size,
-      change: stock.change,
-      sector: stock.sector,
-      fullName: stock.name,
-    })),
-  }];
+  // Fetch heatmap + timeline
+  const fetchData = async () => {
+    try {
+      const [hmRes, tlRes] = await Promise.all([
+        fetch(`${API}/heatmap`),
+        fetch(`${API}/timeline?limit=20`),
+      ]);
+      if (hmRes.ok) setHeatmap(await hmRes.json());
+      if (tlRes.ok) setEvents(await tlRes.json());
+      setLastUpdated(new Date());
+    } catch {
+      // backend may not be up yet
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // WebSocket — refetch on new scored event
+  useEffect(() => {
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+
+    const connect = () => {
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => setWsStatus('connected');
+      ws.onclose = () => {
+        setWsStatus('disconnected');
+        reconnectTimer = setTimeout(connect, 5000);
+      };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'event_scored' || msg.type === 'heatmap_updated') {
+            fetchData();
+          }
+        } catch {}
+      };
+
+      // keep-alive ping every 25s
+      const ping = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+      }, 25_000);
+      ws.onclose = () => {
+        clearInterval(ping);
+        setWsStatus('disconnected');
+        reconnectTimer = setTimeout(connect, 5000);
+      };
+    };
+
+    connect();
+    fetchData();
+    const refreshTimer = setInterval(fetchData, REFRESH_MS);
+
+    return () => {
+      clearTimeout(reconnectTimer);
+      clearInterval(refreshTimer);
+      wsRef.current?.close();
+    };
+  }, []);
+
+  // Build treemap data from heatmap
+  const treemapData = [
+    {
+      name: 'root',
+      children: Object.entries(heatmap).map(([sector, score]) => ({
+        name: sector,
+        size: Math.max(Math.abs(score), 0.4),
+        score,
+      })),
+    },
+  ];
+
+  const hasData = Object.keys(heatmap).length > 0;
 
   return (
-    <div className="min-h-screen bg-slate-950 p-8">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-semibold text-white">Heatmap</h1>
-          <div className="relative">
-            <select
-              value={selectedIndex}
-              onChange={(e) => setSelectedIndex(e.target.value)}
-              className="appearance-none bg-slate-800 text-white px-4 py-2 pr-10 rounded border border-slate-700 cursor-pointer hover:bg-slate-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="NIFTY-50">NIFTY-50</option>
-              <option value="SENSEX">SENSEX</option>
-              <option value="NIFTY-BANK">NIFTY-BANK</option>
-              <option value="NIFTY-IT">NIFTY-IT</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+    <div className="min-h-screen bg-slate-950 text-white p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Event-FX Sector Intelligence</h1>
+          <p className="text-slate-400 text-sm mt-1">
+            Macro sector pressure map — scored from live BBC news events via LLM pipeline
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {lastUpdated && (
+            <span className="text-slate-500 text-xs">Updated {timeAgo(lastUpdated.toISOString())}</span>
+          )}
+          <div className="flex items-center gap-1.5">
+            <div
+              className={`w-2 h-2 rounded-full ${
+                wsStatus === 'connected'
+                  ? 'bg-green-400 animate-pulse'
+                  : wsStatus === 'connecting'
+                  ? 'bg-yellow-400 animate-pulse'
+                  : 'bg-slate-500'
+              }`}
+            />
+            <span className="text-xs text-slate-400">
+              {wsStatus === 'connected' ? 'LIVE' : wsStatus === 'connecting' ? 'CONNECTING' : 'OFFLINE'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        {/* Sector Heatmap */}
+        <div className="xl:col-span-2">
+          <div className="bg-slate-900 rounded-xl border border-slate-800 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wider">
+                Sector Pressure Map
+              </h2>
+              <span className="text-xs text-slate-500">
+                Size = |impact|  ·  Green = tailwind  ·  Red = headwind
+              </span>
+            </div>
+
+            {loading ? (
+              <div className="flex items-center justify-center h-96 text-slate-500 text-sm">
+                Loading sector data...
+              </div>
+            ) : !hasData ? (
+              <div className="flex flex-col items-center justify-center h-96 text-slate-500 text-sm gap-2">
+                <span>No scored events yet.</span>
+                <span className="text-xs">Run the pipeline: POST /pipeline/run</span>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={460}>
+                <Treemap
+                  data={treemapData}
+                  dataKey="size"
+                  aspectRatio={16 / 9}
+                  stroke="#0f172a"
+                  content={<SectorCell />}
+                >
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null;
+                      const d = payload[0].payload as TreemapNode;
+                      return (
+                        <div className="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm shadow-xl">
+                          <p className="font-semibold text-white">{d.name}</p>
+                          <p className={`font-semibold mt-1 ${d.score >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {formatScore(d.score)}
+                          </p>
+                        </div>
+                      );
+                    }}
+                  />
+                </Treemap>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* Legend */}
+          <div className="flex items-center justify-center gap-5 mt-3 text-xs text-slate-500 flex-wrap">
+            {[
+              { color: '#ef4444', label: 'Strong headwind (< −3)' },
+              { color: '#f87171', label: 'Mild headwind' },
+              { color: '#374151', label: 'Neutral' },
+              { color: '#6ee7b7', label: 'Mild tailwind' },
+              { color: '#10b981', label: 'Strong tailwind (> +3)' },
+            ].map(({ color, label }) => (
+              <div key={label} className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: color }} />
+                <span>{label}</span>
+              </div>
+            ))}
           </div>
         </div>
 
-        {/* Heatmap */}
-        <div className="bg-slate-900 rounded-lg border border-slate-800 p-4">
-          <ResponsiveContainer width="100%" height={600}>
-            <Treemap
-              data={treeMapData}
-              dataKey="size"
-              aspectRatio={16 / 9}
-              stroke="#1e293b"
-              fill="#374151"
-              content={<CustomizedContent />}
-            >
-              <Tooltip content={<CustomTooltip />} />
-            </Treemap>
-          </ResponsiveContainer>
-        </div>
+        {/* Event Feed */}
+        <div className="xl:col-span-1">
+          <div className="bg-slate-900 rounded-xl border border-slate-800 p-4 h-full">
+            <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wider mb-3">
+              Recent Events
+            </h2>
 
-        {/* Legend */}
-        <div className="mt-6 flex items-center justify-center gap-6 text-sm">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#ef4444' }}></div>
-            <span className="text-slate-400">Strong Loss (&lt;-2.5%)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#fb923c' }}></div>
-            <span className="text-slate-400">Mild Loss</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#374151' }}></div>
-            <span className="text-slate-400">Neutral</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#6ee7b7' }}></div>
-            <span className="text-slate-400">Mild Gain</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#10b981' }}></div>
-            <span className="text-slate-400">Strong Gain (&gt;3%)</span>
+            {events.length === 0 ? (
+              <div className="text-slate-500 text-sm text-center py-12">
+                No events yet — pipeline hasn't run.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3 overflow-y-auto max-h-[500px] pr-1">
+                {events.map((ev, i) => {
+                  const fxTokens = ev.fx_state.split(' ').map((token) => {
+                    const [ccy, val] = token.split(':');
+                    return { ccy, val, pos: !val?.startsWith('-') };
+                  });
+                  return (
+                    <a
+                      key={i}
+                      href={ev.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block bg-slate-800 hover:bg-slate-750 rounded-lg p-3 transition-colors border border-slate-700 hover:border-slate-600"
+                    >
+                      <p className="text-white text-xs font-medium leading-snug line-clamp-2 mb-2">
+                        {ev.title}
+                      </p>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {fxTokens.map(({ ccy, val, pos }) => (
+                          <span
+                            key={ccy}
+                            className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-medium ${
+                              pos ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'
+                            }`}
+                          >
+                            {ccy} {val}
+                          </span>
+                        ))}
+                        <span className={`text-[10px] ml-auto font-semibold ${ev.total_score >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {formatScore(ev.total_score)}
+                        </span>
+                      </div>
+                      <p className="text-slate-600 text-[10px] mt-1.5">
+                        {timeAgo(ev.published_at)}
+                      </p>
+                    </a>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>
