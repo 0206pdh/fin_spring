@@ -77,6 +77,23 @@ uvicorn app.main:app --reload
 arq app.worker.WorkerSettings
 ```
 
+로컬 실행 시 추가 체크:
+
+- DB 마이그레이션을 먼저 적용해야 합니다.
+
+```bash
+alembic upgrade head
+```
+
+- Windows 로컬 Redis는 `localhost` 대신 `127.0.0.1`로 두는 편이 안전합니다.
+
+```env
+REDIS_URL=redis://127.0.0.1:6379/0
+FIM_REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+- 로컬 PostgreSQL에 `pgvector` 확장이 없으면 경고가 출력될 수 있습니다. 이 경우 기본 파이프라인 확인은 가능하지만 semantic dedupe는 비활성 상태가 됩니다.
+
 ### Docker Compose 전체 실행
 
 ```bash

@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any
 
-from openai import OpenAI
+import requests
 
 from app.config import settings
 
@@ -20,11 +20,6 @@ class LLMClient:
         self.model = settings.openai_model
         self.api_key = settings.openai_api_key
         self.timeout = settings.llm_timeout_sec
-        self._client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            timeout=self.timeout,
-        )
 
     @property
     def provider_name(self) -> str:
@@ -38,15 +33,21 @@ class LLMClient:
         max_tokens: int | None = None,
     ) -> dict[str, Any]:
         start = time.perf_counter()
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=self._headers(),
+            timeout=self.timeout,
+            json={
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                **({"max_tokens": max_tokens} if max_tokens is not None else {}),
+            },
         )
+        response.raise_for_status()
         elapsed_sec = time.perf_counter() - start
         logger.info("LLM chat ok model=%s latency_s=%.2f", self.model, elapsed_sec)
-        return response.model_dump()
+        return response.json()
 
     def structured_chat(
         self,
@@ -68,12 +69,18 @@ class LLMClient:
             },
         }
         start = time.perf_counter()
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            response_format=payload_schema,
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=self._headers(),
+            timeout=self.timeout,
+            json={
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                "response_format": payload_schema,
+            },
         )
+        response.raise_for_status()
         elapsed_sec = time.perf_counter() - start
         logger.info(
             "LLM structured chat ok model=%s schema=%s latency_s=%.2f",
@@ -82,10 +89,11 @@ class LLMClient:
             elapsed_sec,
         )
 
-        choices = response.choices or []
+        payload = response.json()
+        choices = payload.get("choices") or []
         if not choices:
             raise ValueError(f"No choices returned for schema {schema_name}")
-        content = choices[0].message.content or ""
+        content = choices[0].get("message", {}).get("content", "") or ""
         data = _safe_json(content)
         if not isinstance(data, dict):
             raise ValueError(f"Structured response for {schema_name} was not an object")
@@ -93,13 +101,26 @@ class LLMClient:
 
     def embedding(self, text: str, *, model: str = "text-embedding-3-small") -> list[float]:
         start = time.perf_counter()
-        response = self._client.embeddings.create(
-            model=model,
-            input=text[:2000],
+        response = requests.post(
+            f"{self.base_url}/embeddings",
+            headers=self._headers(),
+            timeout=self.timeout,
+            json={
+                "model": model,
+                "input": text[:2000],
+            },
         )
+        response.raise_for_status()
         elapsed_sec = time.perf_counter() - start
         logger.info("LLM embedding ok model=%s latency_s=%.2f", model, elapsed_sec)
-        return list(response.data[0].embedding)
+        payload = response.json()
+        return list(payload["data"][0]["embedding"])
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
 
 
 def _safe_json(text: str) -> dict[str, Any]:

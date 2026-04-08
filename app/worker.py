@@ -215,7 +215,13 @@ class WorkerSettings:
     cron_jobs = [
         cron(seed_replay_job, minute={0, 8, 16, 24, 32, 40, 48, 56}),
     ]
-    redis_settings = None  # set at runtime from app.config
+    try:
+        from app.config import settings
+        from arq.connections import RedisSettings
+
+        redis_settings = RedisSettings.from_dsn(settings.redis_url)
+    except Exception:
+        redis_settings = None
 
     @classmethod
     def build(cls) -> type:
