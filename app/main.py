@@ -46,6 +46,14 @@ logger = logging.getLogger("app.api")
 async def lifespan(application: FastAPI):
     """Startup: init DB + scheduler. Shutdown: stop scheduler."""
     init_db()
+    try:
+        from app.llm.evaluator import ensure_eval_table
+        from app.store.vector_store import ensure_vector_extension
+
+        ensure_eval_table()
+        ensure_vector_extension()
+    except Exception as exc:
+        logger.warning("Phase 2 startup bootstrap skipped: %s", exc)
     if settings.scheduler_enabled:
         from app.scheduler import start_scheduler
         start_scheduler(interval_minutes=settings.scheduler_interval_minutes)
