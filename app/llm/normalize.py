@@ -1,130 +1,11 @@
 from __future__ import annotations
 
-import re
-from app.config import settings
 import logging
+import re
 
-from app.llm.client import LLMClient, _safe_json
+from app.llm.chain import run_norm_chain
+from app.llm.client import LLMClient
 from app.models import NormalizedEvent, RawEvent
-
-# ---------------------------------------------------------------------------
-# Analyst-grade system prompt (FinGPT-style)
-# ---------------------------------------------------------------------------
-
-SYSTEM_PROMPT = (
-    "You are a macro analyst at a Tier-1 investment bank covering cross-asset markets. "
-    "Your job is to classify economic and geopolitical events and assess their market impact "
-    "with the precision of a sell-side research note.\n\n"
-    "RATIONALE STANDARDS — every rationale MUST:\n"
-    "1. Cite at least one concrete data point: a percentage, basis-point move, dollar amount, "
-    "date, or named entity (e.g., 'Fed funds rate at 5.25-5.50%', '$2.1B fine', '25bps hike').\n"
-    "2. Name the transmission mechanism: how this event flows through to FX and equities "
-    "(e.g., 'higher CPI → hawkish Fed repricing → USD strength → EM currency pressure').\n"
-    "3. State a directional bias with a magnitude estimate where possible "
-    "(e.g., 'Energy sector faces 5-8% earnings headwind', 'USD/JPY likely to test 155').\n\n"
-    "FORBIDDEN phrases: 'sector pressure detected', 'market impact expected', "
-    "'uncertainty increases', 'could affect markets', 'may lead to volatility'.\n\n"
-    "Return a single valid JSON object with the schema exactly as requested. "
-    "Do not include any extra text before or after the JSON. "
-    "Always end the response with a closing brace }."
-)
-
-# ---------------------------------------------------------------------------
-# User prompt template with 3-sub-question CoT
-# ---------------------------------------------------------------------------
-
-USER_TEMPLATE = """
-Raw event title: {title}
-Sector tag: {sector}
-Published at: {published_at}
-Category url: {category_url}
-Details: {details_text}
-
-Before writing the rationale, reason through these 3 questions internally:
-Q1 (Data): What concrete numbers, names, or dates appear in this article?
-           (e.g., specific percentages, dollar figures, named countries/companies, deadlines)
-Q2 (Mechanism): What is the step-by-step transmission channel from this event to markets?
-           (e.g., tariff → input cost rise → margin compression → sector rotation out of industrials)
-Q3 (Magnitude): How large is the likely impact? Is this a 1-2% move or a structural regime shift?
-           Reference historical comparables if relevant.
-
-Now extract a normalized event JSON with this schema:
-{{
-  "event_type": "string",
-  "policy_domain": "monetary|fiscal|geopolitics|industry",
-  "risk_signal": "risk_on|risk_off|neutral",
-  "rate_signal": "tightening|easing|none",
-  "geo_signal": "escalation|deescalation|none",
-  "channels": ["string"],
-  "confidence": 0.0,
-  "regime": {{
-    "risk_sentiment": "risk_on|risk_off|neutral",
-    "volatility": "low|elevated|high",
-    "liquidity": "loose|neutral|tight"
-  }},
-  "keywords": ["string"],
-  "rationale": "string"
-}}
-
-Rationale format: Write 2-3 sentences in the voice of a Bloomberg sell-side note.
-Lead with the specific data point from Q1, trace the mechanism from Q2, conclude
-with the directional impact from Q3. Include at least one number (%, $, bps, or date).
-
-Example of a GOOD rationale:
-"The Fed's 25bps rate hold at 5.25-5.50% alongside revised 2024 dot-plot median of 4.6%
-(down from 5.1%) signals a pivot within 2 quarters. Transmission: lower terminal rate
-expectations → DXY weakness → EM local currency bonds become attractive. Energy and
-Financials face 3-5% multiple contraction as the risk-free rate anchor shifts lower."
-
-Example of a BAD rationale (forbidden):
-"The event may lead to market uncertainty. Sector pressure detected. Impact could be significant."
-
-Constraints:
-- Do not include extra keys beyond the schema.
-- Read the full input once (not per sentence or per paragraph).
-- Return exactly one JSON object for the overall event. Do not repeat keys.
-- Always end the response with a closing brace }}.
-- policy_domain must be one of: monetary, fiscal, geopolitics, industry.
-- risk_signal must be one of: risk_on, risk_off, neutral.
-- rate_signal must be one of: tightening, easing, none.
-- geo_signal must be one of: escalation, deescalation, none.
-- channels must be selected from: risk_off, risk_on, rate_tightening, rate_easing, geo_escalation, geo_deescalation.
-- confidence must be between 0 and 1.
-- regime must include risk_sentiment, volatility, and liquidity with the allowed values above.
-- keywords must be a short list of salient terms from the article.
-- rationale must contain at least one numeric token (%, $, bps, or a 4-digit year) and name the transmission channel.
-
-Risk assessment rules:
-- risk_signal is NOT determined only by event_type.
-- regulation_update can be risk_off if:
-  * legal enforcement, investigation, fines, or bans are mentioned
-  * strong public backlash or reputational damage is described
-  * multiple countries or regulators are involved
-- regulation_update is neutral ONLY if it is a routine or clarifying policy change.
-
-Geo assessment rules:
-- geo_signal is escalation if:
-  * multiple countries, regions, or global regulators are involved
-  * cross-border enforcement, bans, or coordinated actions are mentioned
-- geo_signal is none ONLY if the event is confined to a single country or company.
-
-- event_type must be one of:
-  geopolitics_conflict, war_escalation, terror_attack, monetary_tightening,
-  inflation_hot, banking_stress, trade_sanction, recession_signal,
-  monetary_easing, stimulus, inflation_cooling, earnings_positive, ceasefire,
-  policy_stability, regulation_update.
-- event_type implies risk_signal (use these pairs):
-  geopolitics_conflict=risk_off, war_escalation=risk_off, terror_attack=risk_off,
-  monetary_tightening=risk_off, inflation_hot=risk_off, banking_stress=risk_off,
-  trade_sanction=risk_off, recession_signal=risk_off, monetary_easing=risk_on,
-  stimulus=risk_on, inflation_cooling=risk_on, earnings_positive=risk_on,
-  ceasefire=risk_on, policy_stability=neutral, regulation_update=neutral.
-- If unsure, choose policy_stability and neutral signals.
-"""
-
-# ---------------------------------------------------------------------------
-# Signal mappings and allowed values
-# ---------------------------------------------------------------------------
 
 EVENT_TYPE_RISK_SIGNAL = {
     "geopolitics_conflict": "risk_off",
@@ -149,60 +30,49 @@ ALLOWED_POLICY_DOMAINS = {"monetary", "fiscal", "geopolitics", "industry"}
 ALLOWED_RISK_SIGNALS = {"risk_on", "risk_off", "neutral"}
 ALLOWED_RATE_SIGNALS = {"tightening", "easing", "none"}
 ALLOWED_GEO_SIGNALS = {"escalation", "deescalation", "none"}
+ALLOWED_SENTIMENTS = {"positive", "negative", "neutral"}
 
-# Rationale fallback phrase appended when LLM produces no numeric tokens.
-# Triggers the tests/test_normalize.py::test_rationale_number_validator assertion.
 _FALLBACK_NUMERIC_PHRASE = " (quantitative data unavailable for this event)"
-
 _NUMBER_PATTERN = re.compile(r"\d+")
 
 logger = logging.getLogger("app.llm")
 
 
-def _normalize_event_type(value: str) -> str:
+def _normalize_token(value: str) -> str:
     return value.strip().lower().replace("-", "_").replace(" ", "_")
 
 
 def _validate_rationale(rationale: str) -> str:
-    """Ensure rationale contains at least one numeric token.
-
-    If not, appends a fallback phrase so downstream consumers can detect
-    low-quality rationales without crashing (they fail a regex check, not an exception).
-    """
     if not rationale:
         return rationale
     if not _NUMBER_PATTERN.search(rationale):
-        logger.warning("rationale missing numeric token — appending fallback phrase")
+        logger.warning("rationale missing numeric token; appending fallback phrase")
         return rationale + _FALLBACK_NUMERIC_PHRASE
     return rationale
 
 
-def normalize_event(raw_event: RawEvent) -> NormalizedEvent:
+def normalize_event(raw_event: RawEvent, client: LLMClient | None = None) -> NormalizedEvent:
+    client = client or LLMClient()
+    duplicate = _reuse_duplicate_normalization(raw_event, client)
+    if duplicate is not None:
+        _log_eval(client, duplicate)
+        return duplicate
+
     details_text, category_url = _details_summary(raw_event.payload)
-    user_prompt = USER_TEMPLATE.format(
+    graph_result = run_norm_chain(
         title=raw_event.title,
         sector=raw_event.sector,
-        published_at=raw_event.published_at,
-        category_url=category_url,
-        details_text=details_text,
+        published_at=str(raw_event.published_at),
+        details_text=details_text or raw_event.title,
+        client=client,
     )
-    client = LLMClient()
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
-    response = client.chat(messages)
-    choices = response.get("choices", [])
-    content = ""
-    if choices:
-        content = choices[0].get("message", {}).get("content", "") or ""
-    logger.info("LLM raw output: %s", content)
-    data = _safe_json(content)
-    event_type = _normalize_event_type(str(data.get("event_type", "policy_stability")))
-    policy_domain = _normalize_event_type(str(data.get("policy_domain", "industry")))
-    risk_signal = _normalize_event_type(str(data.get("risk_signal", "neutral")))
-    rate_signal = _normalize_event_type(str(data.get("rate_signal", "none")))
-    geo_signal = _normalize_event_type(str(data.get("geo_signal", "none")))
+
+    event_type = _normalize_token(graph_result.event_type or "policy_stability")
+    policy_domain = _normalize_token(graph_result.policy_domain or "industry")
+    risk_signal = _normalize_token(graph_result.risk_signal or "neutral")
+    rate_signal = _normalize_token(graph_result.rate_signal or "none")
+    geo_signal = _normalize_token(graph_result.geo_signal or "none")
+    sentiment = _normalize_token(graph_result.sentiment or "neutral")
 
     if event_type not in ALLOWED_EVENT_TYPES:
         event_type = "policy_stability"
@@ -214,42 +84,165 @@ def normalize_event(raw_event: RawEvent) -> NormalizedEvent:
         rate_signal = "none"
     if geo_signal not in ALLOWED_GEO_SIGNALS:
         geo_signal = "none"
+    if sentiment not in ALLOWED_SENTIMENTS:
+        sentiment = "neutral"
 
     mapped_risk = EVENT_TYPE_RISK_SIGNAL.get(event_type)
-    if risk_signal == "neutral" and mapped_risk:
+    if mapped_risk:
         risk_signal = mapped_risk
 
-    keywords = data.get("keywords") or []
-    rationale = _validate_rationale(str(data.get("rationale", "")).strip())
-    channels = data.get("channels") or []
-    confidence = data.get("confidence", 0.6)
-    regime = data.get("regime") or {}
-
-    logger.info("LLM keywords: %s", keywords)
-    logger.info("LLM rationale: %s", rationale if rationale else "(none)")
-    logger.info("LLM channels: %s", channels)
-    logger.info("LLM confidence: %s", confidence)
-    logger.info("LLM regime: %s", regime)
-
-    try:
-        confidence_value = float(confidence) if confidence is not None else 0.6
-    except (TypeError, ValueError):
-        confidence_value = 0.6
-
-    return NormalizedEvent(
+    normalized = NormalizedEvent(
         raw_event_id=raw_event.id,
         event_type=event_type,
         policy_domain=policy_domain,
         risk_signal=risk_signal,
         rate_signal=rate_signal,
         geo_signal=geo_signal,
-        sector_impacts={k: int(v) for k, v in (data.get("sector_impacts") or {}).items()},
-        sentiment=str(data.get("sentiment", "neutral")),
-        rationale=rationale,
-        channels=[str(ch) for ch in channels if ch],
-        confidence=confidence_value,
-        regime={str(k): str(v) for k, v in regime.items()} if isinstance(regime, dict) else {},
+        sector_impacts=_normalize_sector_impacts(graph_result.sector_impacts),
+        sentiment=sentiment,
+        rationale=_validate_rationale(graph_result.rationale.strip()),
+        channels=_normalize_channels(graph_result.channels, risk_signal, rate_signal, geo_signal),
+        confidence=_normalize_confidence(graph_result.confidence),
+        regime=_normalize_regime(graph_result.regime.model_dump()),
     )
+
+    _persist_embedding(raw_event, details_text, client)
+    _log_eval(client, normalized)
+    logger.info(
+        "normalized raw_event_id=%s event_type=%s channels=%s confidence=%.2f category_url=%s",
+        raw_event.id,
+        normalized.event_type,
+        normalized.channels,
+        normalized.confidence,
+        category_url,
+    )
+    return normalized
+
+
+def _reuse_duplicate_normalization(raw_event: RawEvent, client: LLMClient) -> NormalizedEvent | None:
+    try:
+        from app.store.event_store import fetch_normalized_event
+        from app.store.vector_store import check_duplicate, save_embedding
+    except Exception:
+        return None
+
+    embedding_text = _embedding_text(raw_event)
+    if not embedding_text:
+        return None
+
+    try:
+        embedding = client.embedding(embedding_text)
+        is_duplicate, existing_id = check_duplicate(embedding)
+    except Exception as exc:
+        logger.warning("duplicate detection failed raw_event_id=%s: %s", raw_event.id, exc)
+        return None
+
+    if not is_duplicate or not existing_id:
+        return None
+
+    existing = fetch_normalized_event(existing_id)
+    if existing is None:
+        return None
+
+    try:
+        save_embedding(raw_event.id, raw_event.title, embedding)
+    except Exception as exc:
+        logger.warning("duplicate embedding persistence failed raw_event_id=%s: %s", raw_event.id, exc)
+
+    logger.info(
+        "semantic duplicate raw_event_id=%s existing_raw_event_id=%s; reusing normalization",
+        raw_event.id,
+        existing_id,
+    )
+    return existing.model_copy(update={"raw_event_id": raw_event.id})
+
+
+def _persist_embedding(raw_event: RawEvent, details_text: str, client: LLMClient) -> None:
+    try:
+        from app.store.vector_store import save_embedding
+    except Exception:
+        return
+
+    embedding_text = _embedding_text(raw_event, details_text)
+    if not embedding_text:
+        return
+
+    try:
+        embedding = client.embedding(embedding_text)
+        save_embedding(raw_event.id, raw_event.title, embedding)
+    except Exception as exc:
+        logger.warning("embedding persistence failed raw_event_id=%s: %s", raw_event.id, exc)
+
+
+def _log_eval(client: LLMClient, normalized: NormalizedEvent) -> None:
+    try:
+        from app.llm.evaluator import log_eval
+
+        log_eval(
+            raw_event_id=normalized.raw_event_id,
+            event_type=normalized.event_type,
+            risk_signal=normalized.risk_signal,
+            confidence=normalized.confidence,
+            provider=client.provider_name,
+            model=client.model,
+        )
+    except Exception as exc:
+        logger.warning("eval logging failed raw_event_id=%s: %s", normalized.raw_event_id, exc)
+
+
+def _normalize_confidence(value: float | int | None) -> float:
+    if value is None:
+        return 0.6
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.6
+    return max(0.0, min(1.0, confidence))
+
+
+def _normalize_regime(value: dict[str, str] | None) -> dict[str, str]:
+    if not isinstance(value, dict):
+        value = {}
+    return {
+        "risk_sentiment": str(value.get("risk_sentiment", "neutral")),
+        "volatility": str(value.get("volatility", "elevated")),
+        "liquidity": str(value.get("liquidity", "neutral")),
+    }
+
+
+def _normalize_channels(
+    channels: list[str] | None,
+    risk_signal: str,
+    rate_signal: str,
+    geo_signal: str,
+) -> list[str]:
+    normalized = [_normalize_token(ch) for ch in (channels or []) if ch]
+    for implied in (risk_signal,):
+        if implied in {"risk_on", "risk_off"} and implied not in normalized:
+            normalized.append(implied)
+    if rate_signal == "tightening" and "rate_tightening" not in normalized:
+        normalized.append("rate_tightening")
+    if rate_signal == "easing" and "rate_easing" not in normalized:
+        normalized.append("rate_easing")
+    if geo_signal == "escalation" and "geo_escalation" not in normalized:
+        normalized.append("geo_escalation")
+    if geo_signal == "deescalation" and "geo_deescalation" not in normalized:
+        normalized.append("geo_deescalation")
+    return list(dict.fromkeys(normalized))
+
+
+def _normalize_sector_impacts(value: dict[str, int] | None) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for sector, score in value.items():
+        if not sector:
+            continue
+        try:
+            normalized[str(sector)] = max(-3, min(3, int(score)))
+        except (TypeError, ValueError):
+            continue
+    return normalized
 
 
 def _details_summary(payload: dict) -> tuple[str, str]:
@@ -298,3 +291,9 @@ def _details_summary(payload: dict) -> tuple[str, str]:
 def extract_details_text(payload: dict) -> str:
     summary, _ = _details_summary(payload)
     return summary
+
+
+def _embedding_text(raw_event: RawEvent, details_text: str | None = None) -> str:
+    details = details_text if details_text is not None else extract_details_text(raw_event.payload)
+    parts = [raw_event.title or "", details or ""]
+    return " ".join(part.strip() for part in parts if part).strip()

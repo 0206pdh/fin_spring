@@ -1,20 +1,16 @@
-"""Tests for app/llm/normalize.py — event classification + rationale validation.
-
-Run: pytest tests/test_normalize.py -v
-"""
+"""Tests for app/llm/normalize.py and the LangGraph-backed normalization path."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+from app.llm.structured import NormalizationOutput, RegimeModel
 from app.llm.normalize import (
     ALLOWED_EVENT_TYPES,
     _FALLBACK_NUMERIC_PHRASE,
     _validate_rationale,
     normalize_event,
 )
-from app.models import RawEvent
+from app.models import NormalizedEvent, RawEvent
 
 
 def _make_raw_event(**kwargs) -> RawEvent:
@@ -31,75 +27,59 @@ def _make_raw_event(**kwargs) -> RawEvent:
     return RawEvent(**defaults)
 
 
-def _mock_llm_response(data: dict) -> dict:
-    import json
-    return {
-        "choices": [
-            {"message": {"content": json.dumps(data)}}
-        ]
-    }
+def _graph_output(**overrides) -> NormalizationOutput:
+    data = dict(
+        event_type="monetary_tightening",
+        policy_domain="monetary",
+        risk_signal="risk_off",
+        rate_signal="tightening",
+        geo_signal="none",
+        channels=["risk_off", "rate_tightening"],
+        confidence=0.85,
+        regime=RegimeModel(
+            risk_sentiment="risk_off",
+            volatility="elevated",
+            liquidity="tight",
+        ),
+        keywords=["Fed", "25bps", "rates"],
+        rationale="Fed held rates at 5.25% in 2024, reinforcing restrictive policy transmission.",
+        sentiment="negative",
+        sector_impacts={"Finance": -1},
+    )
+    data.update(overrides)
+    return NormalizationOutput.model_validate(data)
 
-
-# ---------------------------------------------------------------------------
-# event_type fallback
-# ---------------------------------------------------------------------------
 
 def test_event_type_fallback():
-    """Unknown event_type from LLM → falls back to policy_stability."""
-    llm_data = {
-        "event_type": "alien_invasion",  # not in ALLOWED_EVENT_TYPES
-        "policy_domain": "geopolitics",
-        "risk_signal": "risk_off",
-        "rate_signal": "none",
-        "geo_signal": "none",
-        "channels": ["risk_off"],
-        "confidence": 0.7,
-        "regime": {"risk_sentiment": "risk_off", "volatility": "elevated", "liquidity": "neutral"},
-        "keywords": ["test"],
-        "rationale": "Alien invasion detected in 2024, causing $500B economic disruption.",
-    }
-    with patch("app.llm.normalize.LLMClient") as MockClient:
-        MockClient.return_value.chat.return_value = _mock_llm_response(llm_data)
-        result = normalize_event(_make_raw_event())
+    with patch("app.llm.normalize.run_norm_chain", return_value=_graph_output(event_type="alien_invasion")):
+        with patch("app.llm.normalize._reuse_duplicate_normalization", return_value=None):
+            with patch("app.llm.normalize._persist_embedding"):
+                with patch("app.llm.normalize._log_eval"):
+                    result = normalize_event(_make_raw_event(), client=MagicMock())
 
     assert result.event_type == "policy_stability"
     assert result.event_type in ALLOWED_EVENT_TYPES
 
 
 def test_known_event_type_preserved():
-    """Known event_type is kept as-is."""
-    llm_data = {
-        "event_type": "monetary_tightening",
-        "policy_domain": "monetary",
-        "risk_signal": "risk_off",
-        "rate_signal": "tightening",
-        "geo_signal": "none",
-        "channels": ["rate_tightening"],
-        "confidence": 0.85,
-        "regime": {"risk_sentiment": "risk_off", "volatility": "elevated", "liquidity": "tight"},
-        "keywords": ["Fed", "rate hike", "25bps"],
-        "rationale": "Fed hiked 25bps to 5.50%, dot-plot median for 2024 revised to 4.6%.",
-    }
-    with patch("app.llm.normalize.LLMClient") as MockClient:
-        MockClient.return_value.chat.return_value = _mock_llm_response(llm_data)
-        result = normalize_event(_make_raw_event())
+    with patch("app.llm.normalize.run_norm_chain", return_value=_graph_output()):
+        with patch("app.llm.normalize._reuse_duplicate_normalization", return_value=None):
+            with patch("app.llm.normalize._persist_embedding"):
+                with patch("app.llm.normalize._log_eval"):
+                    result = normalize_event(_make_raw_event(), client=MagicMock())
 
     assert result.event_type == "monetary_tightening"
+    assert result.rate_signal == "tightening"
+    assert "rate_tightening" in result.channels
 
-
-# ---------------------------------------------------------------------------
-# Rationale number validator
-# ---------------------------------------------------------------------------
 
 def test_rationale_number_validator():
-    """Rationale with no numeric token → fallback phrase appended."""
     rationale_no_numbers = "Sector pressure detected. Market uncertainty may increase."
     result = _validate_rationale(rationale_no_numbers)
     assert _FALLBACK_NUMERIC_PHRASE in result
 
 
 def test_rationale_with_number_passes():
-    """Rationale containing '$240M' → no fallback phrase added."""
     rationale_with_number = "Regulator levied $240M fine on the platform for antitrust violations."
     result = _validate_rationale(rationale_with_number)
     assert _FALLBACK_NUMERIC_PHRASE not in result
@@ -107,50 +87,57 @@ def test_rationale_with_number_passes():
 
 
 def test_rationale_with_percentage_passes():
-    """Rationale containing a percentage → passes without fallback."""
     rationale = "CPI rose 3.4% YoY, above consensus of 3.2%, pushing yields higher."
     result = _validate_rationale(rationale)
     assert _FALLBACK_NUMERIC_PHRASE not in result
 
 
 def test_rationale_with_year_passes():
-    """Rationale containing a 4-digit year → passes (year counts as numeric token)."""
     rationale = "Policy implemented in 2024 signals tighter regulatory environment ahead."
     result = _validate_rationale(rationale)
     assert _FALLBACK_NUMERIC_PHRASE not in result
 
 
 def test_rationale_empty_unchanged():
-    """Empty rationale → no fallback appended (nothing to validate)."""
     result = _validate_rationale("")
     assert result == ""
 
 
-# ---------------------------------------------------------------------------
-# End-to-end normalize_event smoke test (no LLM call)
-# ---------------------------------------------------------------------------
-
 def test_normalize_event_returns_normalized_event():
-    """normalize_event() returns a NormalizedEvent with required fields."""
-    from app.models import NormalizedEvent
+    with patch("app.llm.normalize.run_norm_chain", return_value=_graph_output(confidence=0.8)):
+        with patch("app.llm.normalize._reuse_duplicate_normalization", return_value=None):
+            with patch("app.llm.normalize._persist_embedding"):
+                with patch("app.llm.normalize._log_eval"):
+                    result = normalize_event(_make_raw_event(), client=MagicMock())
 
-    llm_data = {
-        "event_type": "inflation_hot",
-        "policy_domain": "monetary",
-        "risk_signal": "risk_off",
-        "rate_signal": "tightening",
-        "geo_signal": "none",
-        "channels": ["rate_tightening", "risk_off"],
-        "confidence": 0.8,
-        "regime": {"risk_sentiment": "risk_off", "volatility": "elevated", "liquidity": "tight"},
-        "keywords": ["CPI", "inflation", "3.4%"],
-        "rationale": "CPI printed at 3.4%, above the 3.2% consensus estimate for January 2024.",
-    }
-    with patch("app.llm.normalize.LLMClient") as MockClient:
-        MockClient.return_value.chat.return_value = _mock_llm_response(llm_data)
-        result = normalize_event(_make_raw_event())
+    from app.models import NormalizedEvent
 
     assert isinstance(result, NormalizedEvent)
     assert result.raw_event_id == "test-001"
     assert result.event_type in ALLOWED_EVENT_TYPES
     assert 0.0 <= result.confidence <= 1.0
+
+
+def test_duplicate_reuses_existing_normalized_event():
+    reused = NormalizedEvent(
+        raw_event_id="test-001",
+        event_type="monetary_tightening",
+        policy_domain="monetary",
+        risk_signal="risk_off",
+        rate_signal="tightening",
+        geo_signal="none",
+        sector_impacts={"Finance": -1},
+        sentiment="negative",
+        rationale="Fed held rates at 5.25% in 2024, reinforcing restrictive policy transmission.",
+        channels=["risk_off", "rate_tightening"],
+        confidence=0.85,
+        regime={"risk_sentiment": "risk_off", "volatility": "elevated", "liquidity": "tight"},
+        baseline={},
+    )
+
+    with patch("app.llm.normalize._reuse_duplicate_normalization", return_value=reused):
+        with patch("app.llm.normalize._log_eval"):
+            result = normalize_event(_make_raw_event(), client=MagicMock())
+
+    assert result.raw_event_id == "test-001"
+    assert result.event_type == "monetary_tightening"

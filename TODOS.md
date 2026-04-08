@@ -1,37 +1,57 @@
-# Technical Debt & Future Work
+# Technical Debt and Next Work
 
-## Dead Code
+## Completed in This Update
 
-### `app/llm/chain.py` — LangGraph 3-node chain (unused)
-**Status:** Dead code. Do not delete yet — kept for Phase 6 reference.
+- Removed the duplicate Spring backend.
+- Replaced the old single-prompt normalization path with a real LangGraph chain.
+- Switched node outputs to strict schema validation through `app/llm/structured.py`.
+- Wired evaluator logging into the runtime normalization path.
+- Wired pgvector semantic dedupe and embedding persistence into the runtime normalization path.
 
-`chain.py` defines a LangGraph classify → channel → rationale pipeline but is never
-imported by `main.py`, `worker.py`, or any other module. The actual LLM pipeline runs
-through `app/llm/normalize.py` using a single MistralClient prompt.
+## Active Technical Debt
 
-When to act: Phase 6 multi-step reasoning upgrade. At that point, wire `chain.py`
-into `normalize.py` as a drop-in replacement for `MistralClient.chat()`.
+### Legacy startup DDL in `app/store/db.py`
+
+`init_db()` still creates and patches tables at process startup. That was useful for fast iteration, but schema ownership should now sit entirely with Alembic.
+
+When to act:
+- before Phase 5 CI/CD hardening
+
+What to do:
+- reduce `init_db()` to connectivity/bootstrap checks only
+- fail fast when migrations are missing instead of mutating schema at runtime
 
 ---
 
-## Phase 6.5 — EDGAR Grounding
+### Frontend still does not consume the full Phase 2 backend
 
-### Idea: Ground rationale with real SEC filings via EDGAR full-text search API
+The backend now exposes:
+- live pipeline events over WebSocket
+- timeline data
+- event insight and rationale endpoints
 
-**Motivation:** Current rationale quality is limited by what the LLM "knows" about
-a company at inference time. EDGAR's full-text search API (free, no key required)
-lets us pull recent 8-K/10-Q snippets for the named company and inject them as
-grounding context into the rationale prompt.
+The main React app still renders only the chart and heatmap pages.
 
-**Design sketch:**
-1. `app/ingest/edgar.py` — extract company ticker from article title via NER or
-   regex, query `https://efts.sec.gov/LATEST/search-index?q="TICKER"&dateRange=custom&startdt=...`
-2. Inject top 2-3 filing excerpts into `USER_TEMPLATE` as `{edgar_context}`.
-3. Rationale can now cite: "Per Apple's Q1 2024 10-Q, services revenue grew 11.3% YoY..."
+When to act:
+- Phase 4
 
-**Tradeoffs:**
-- Adds ~500ms latency per normalize call (EDGAR HTTP round-trip).
-- EDGAR rate limit: ~10 req/sec. At batch size 10, fine.
-- No key required. Public API.
+What to do:
+- add WebSocket client to `src/`
+- add timeline and event detail panels
+- remove duplicate prototype frontends and converge on one app
 
-**Blocked by:** Phase 5 deployment must ship first. EDGAR integration is Phase 6.5.
+---
+
+## Future Work
+
+### Phase 6: EDGAR Grounding
+
+Ground analyst rationale with real SEC filings via EDGAR full-text search.
+
+Expected benefit:
+- better company-specific rationale
+- less unsupported narrative generation
+- stronger auditability for market-impact explanations
+
+Blocked by:
+- frontend integration and deployment hardening should land first

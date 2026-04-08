@@ -1,28 +1,16 @@
-"""Structured LLM output using OpenAI function calling.
-
-Why structured output over _safe_json()?
-- _safe_json() is a best-effort JSON parser on free-text LLM output
-  → brittle, fails on truncated responses, produces silently wrong values
-- OpenAI function calling enforces the schema at the API level
-  → guaranteed valid JSON that matches our Pydantic model
-  → no regex/string hacks, no fallback guessing
-
-This module provides get_structured_normalization() which replaces
-the raw normalize_event() call when provider == "openai".
-"""
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field
 
+from app.llm.client import LLMClient
+
 logger = logging.getLogger("app.llm.structured")
 
-# ---------------------------------------------------------------------------
-# Pydantic schema — the single source of truth for LLM output structure
-# ---------------------------------------------------------------------------
+StructuredModelT = TypeVar("StructuredModelT", bound=BaseModel)
+
 
 class RegimeModel(BaseModel):
     risk_sentiment: str = Field(description="risk_on | risk_off | neutral")
@@ -30,7 +18,7 @@ class RegimeModel(BaseModel):
     liquidity: str = Field(description="loose | neutral | tight")
 
 
-class NormalizationOutput(BaseModel):
+class ClassificationOutput(BaseModel):
     event_type: str = Field(
         description=(
             "One of: geopolitics_conflict, war_escalation, terror_attack, "
@@ -41,106 +29,85 @@ class NormalizationOutput(BaseModel):
     )
     policy_domain: str = Field(description="monetary | fiscal | geopolitics | industry")
     risk_signal: str = Field(description="risk_on | risk_off | neutral")
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class ChannelOutput(BaseModel):
     rate_signal: str = Field(description="tightening | easing | none")
     geo_signal: str = Field(description="escalation | deescalation | none")
     channels: list[str] = Field(
         description="Subset of: risk_off, risk_on, rate_tightening, rate_easing, geo_escalation, geo_deescalation"
     )
-    confidence: float = Field(ge=0.0, le=1.0, description="Model confidence 0.0–1.0")
     regime: RegimeModel
-    keywords: list[str] = Field(description="3–7 salient terms from the article")
-    rationale: str = Field(description="1-2 sentence justification for risk_signal and geo_signal choice")
 
 
-# ---------------------------------------------------------------------------
-# Function calling definition (sent to OpenAI)
-# ---------------------------------------------------------------------------
-
-NORMALIZATION_FUNCTION: dict[str, Any] = {
-    "name": "normalize_financial_event",
-    "description": "Extract a structured financial event from a news article",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "event_type": {
-                "type": "string",
-                "enum": [
-                    "geopolitics_conflict", "war_escalation", "terror_attack",
-                    "monetary_tightening", "inflation_hot", "banking_stress",
-                    "trade_sanction", "recession_signal", "monetary_easing",
-                    "stimulus", "inflation_cooling", "earnings_positive",
-                    "ceasefire", "policy_stability", "regulation_update",
-                ],
-            },
-            "policy_domain": {"type": "string", "enum": ["monetary", "fiscal", "geopolitics", "industry"]},
-            "risk_signal": {"type": "string", "enum": ["risk_on", "risk_off", "neutral"]},
-            "rate_signal": {"type": "string", "enum": ["tightening", "easing", "none"]},
-            "geo_signal": {"type": "string", "enum": ["escalation", "deescalation", "none"]},
-            "channels": {
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "enum": ["risk_off", "risk_on", "rate_tightening", "rate_easing", "geo_escalation", "geo_deescalation"],
-                },
-            },
-            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-            "regime": {
-                "type": "object",
-                "properties": {
-                    "risk_sentiment": {"type": "string", "enum": ["risk_on", "risk_off", "neutral"]},
-                    "volatility": {"type": "string", "enum": ["low", "elevated", "high"]},
-                    "liquidity": {"type": "string", "enum": ["loose", "neutral", "tight"]},
-                },
-                "required": ["risk_sentiment", "volatility", "liquidity"],
-            },
-            "keywords": {"type": "array", "items": {"type": "string"}},
-            "rationale": {"type": "string"},
-        },
-        "required": [
-            "event_type", "policy_domain", "risk_signal", "rate_signal",
-            "geo_signal", "channels", "confidence", "regime", "keywords", "rationale",
-        ],
-    },
-}
+class RationaleOutput(BaseModel):
+    keywords: list[str] = Field(description="3 to 6 salient terms from the article")
+    rationale: str = Field(description="2 to 3 sentence market rationale with at least one number")
+    sentiment: str = Field(description="positive | negative | neutral")
+    sector_impacts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Optional direct sector tilt from -3 to +3, keyed by sector name",
+    )
 
 
-def call_structured_normalization(
-    title: str,
-    sector: str,
-    published_at: str,
-    details_text: str,
-    openai_client: Any,
-    model: str = "gpt-4o-mini",
+class NormalizationOutput(BaseModel):
+    event_type: str
+    policy_domain: str
+    risk_signal: str
+    rate_signal: str
+    geo_signal: str
+    channels: list[str]
+    confidence: float
+    regime: RegimeModel
+    keywords: list[str]
+    rationale: str
+    sentiment: str = "neutral"
+    sector_impacts: dict[str, int] = Field(default_factory=dict)
+
+
+def call_schema(
+    client: LLMClient,
+    *,
+    schema_model: type[StructuredModelT],
+    messages: list[dict[str, str]],
+    schema_name: str,
+    description: str,
+) -> StructuredModelT:
+    """Call the model with a strict JSON schema and validate the result."""
+    data = client.structured_chat(
+        messages,
+        schema_name=schema_name,
+        schema=_strict_json_schema(schema_model),
+        description=description,
+    )
+    result = schema_model.model_validate(data)
+    logger.debug("Structured %s output=%s", schema_name, result.model_dump())
+    return result
+
+
+def merge_normalization_outputs(
+    classify: ClassificationOutput,
+    channel: ChannelOutput,
+    rationale: RationaleOutput,
 ) -> NormalizationOutput:
-    """Call OpenAI with function calling and return a validated NormalizationOutput.
-
-    Raises ValueError if the API doesn't return a valid function call.
-    """
-    system_msg = (
-        "You are an event normalizer for macro, geopolitics, and policy news. "
-        "Call the normalize_financial_event function with values extracted from the article."
-    )
-    user_msg = (
-        f"Title: {title}\nSector: {sector}\nPublished: {published_at}\n\n{details_text}"
-    )
-
-    response = openai_client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg},
-        ],
-        tools=[{"type": "function", "function": NORMALIZATION_FUNCTION}],
-        tool_choice={"type": "function", "function": {"name": "normalize_financial_event"}},
-        temperature=0.0,
+    return NormalizationOutput(
+        event_type=classify.event_type,
+        policy_domain=classify.policy_domain,
+        risk_signal=classify.risk_signal,
+        rate_signal=channel.rate_signal,
+        geo_signal=channel.geo_signal,
+        channels=channel.channels,
+        confidence=classify.confidence,
+        regime=channel.regime,
+        keywords=rationale.keywords,
+        rationale=rationale.rationale,
+        sentiment=rationale.sentiment,
+        sector_impacts=rationale.sector_impacts,
     )
 
-    tool_calls = response.choices[0].message.tool_calls
-    if not tool_calls:
-        raise ValueError("OpenAI did not return a function call")
 
-    raw_args = tool_calls[0].function.arguments
-    logger.debug("Structured output raw_args=%s", raw_args[:200])
-
-    data = json.loads(raw_args)
-    return NormalizationOutput.model_validate(data)
+def _strict_json_schema(schema_model: type[BaseModel]) -> dict[str, Any]:
+    schema = schema_model.model_json_schema()
+    schema["additionalProperties"] = False
+    return schema
