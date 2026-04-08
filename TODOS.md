@@ -25,21 +25,22 @@
 
 ### 메인 프론트엔드가 아직 Phase 2 백엔드를 충분히 사용하지 않음
 
-백엔드는 이미 다음을 제공합니다.
+이 항목은 일부 해소됐습니다. 메인 React 앱이 이제 다음을 사용합니다.
 
-- WebSocket 기반 실시간 파이프라인 이벤트
+- WebSocket 기반 실시간 갱신
 - timeline 데이터
 - event insight / rationale API
+- category 기반 뉴스 선택과 단건 파이프라인 실행
 
-하지만 메인 React 앱은 아직 차트와 heatmap만 렌더링합니다.
+하지만 아직 남은 정리가 있습니다.
 
 언제 처리할지:
 - Phase 4
 
 해야 할 것:
-- `src/`에 WebSocket 클라이언트 추가
-- timeline / event detail 패널 추가
-- 중복 프로토타입 프론트엔드를 하나로 통합
+- 중복 프로토타입 프론트엔드와 `app/ui` 정리
+- timeline 검색 / 필터 / 정렬 추가
+- insight 패널과 파이프라인 제어 UX 다듬기
 
 ---
 
