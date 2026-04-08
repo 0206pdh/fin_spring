@@ -21,7 +21,7 @@
 | Phase 1 | 비동기 파이프라인과 실시간 브로드캐스트 | 완료 | ARQ, APScheduler, WebSocket이 실제 런타임에 연결됨 |
 | Phase 2 | 계층형 LLM 정규화 | 완료 | LangGraph 체인, structured output, evaluator, semantic dedupe 연결 완료 |
 | Phase 3 | 프로덕션 지향 데이터 레이어 | 진행 중 | Alembic, 캐시, Docker Compose 존재. startup 호환 DDL은 아직 남아 있음 |
-| Phase 4 | 프론트엔드 통합 | 진행 중 | 백엔드 실시간 기능은 준비됨. 메인 React UI는 아직 일부만 사용 |
+| Phase 4 | 프론트엔드 통합 | 진행 중 | 메인 React UI가 실시간 대시보드로 연결됨. 세부 polish와 정리는 남아 있음 |
 | Phase 5 | 배포 및 관측성 | 예정 | CI/CD, 메트릭, 구조화 로그, 배포 자동화 |
 | Phase 6 | grounding 및 분석 품질 강화 | 예정 | EDGAR grounding, retrieval, 평가 고도화 |
 
@@ -122,20 +122,21 @@
 
 ### 현재 상태
 
-- 메인 React 앱은 현재 다음만 렌더링함
+- 메인 React 앱이 현재 다음을 실제로 사용함
   - FX 차트
   - heatmap
-- 백엔드는 이미 다음을 제공함
-  - 실시간 WebSocket 업데이트
   - timeline
-  - insight endpoint
+  - category별 뉴스 선택
+  - event insight / rationale 패널
+  - `/ws/pipeline` 기반 실시간 갱신
+- 백엔드 실시간 경로와 메인 프론트가 동일 데이터 경로를 공유함
 
 ### 남은 작업
 
-- 메인 React 앱에 `/ws/pipeline` 통합
-- timeline / event detail 뷰 추가
-- rationale, FX reasoning, heatmap reasoning을 메인 UI에 노출
-- 중복 프로토타입 프론트엔드를 하나로 정리
+- 프론트 프로토타입 디렉터리와 구형 정적 UI 정리
+- timeline 필터링 / 정렬 / 검색 UX 강화
+- 실시간 상태와 파이프라인 제어 UX 다듬기
+- 메인 UI 기준으로 화면 구성과 스타일 시스템 정리
 
 ---
 

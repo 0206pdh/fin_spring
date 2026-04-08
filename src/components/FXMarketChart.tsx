@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip } from 'recharts';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 interface TimelineEvent {
   title: string;
@@ -15,13 +14,16 @@ interface ChartPoint {
   EM: number;
 }
 
-function parseFxState(fx_state: string): Record<string, number> {
+function parseFxState(fxState: string): Record<string, number> {
   const result: Record<string, number> = {};
-  for (const token of fx_state.split(' ')) {
-    const [ccy, raw] = token.split(':');
-    if (ccy && raw !== undefined) {
-      const val = parseFloat(raw);
-      if (!isNaN(val)) result[ccy.toUpperCase()] = val;
+  for (const token of fxState.split(" ")) {
+    const [currency, raw] = token.split(":");
+    if (!currency || raw === undefined) {
+      continue;
+    }
+    const value = Number.parseFloat(raw);
+    if (!Number.isNaN(value)) {
+      result[currency.toUpperCase()] = value;
     }
   }
   return result;
@@ -29,82 +31,113 @@ function parseFxState(fx_state: string): Record<string, number> {
 
 function buildChartData(events: TimelineEvent[]): ChartPoint[] {
   const ordered = [...events].reverse();
-  let cumUSD = 0, cumJPY = 0, cumEUR = 0, cumEM = 0;
-  return ordered.map((ev) => {
-    const fx = parseFxState(ev.fx_state);
-    cumUSD = parseFloat((cumUSD + (fx['USD'] ?? 0)).toFixed(3));
-    cumJPY = parseFloat((cumJPY + (fx['JPY'] ?? 0)).toFixed(3));
-    cumEUR = parseFloat((cumEUR + (fx['EUR'] ?? 0)).toFixed(3));
-    cumEM  = parseFloat((cumEM  + (fx['EM']  ?? 0)).toFixed(3));
-    const label = ev.title.length > 22 ? ev.title.slice(0, 22) + '…' : ev.title;
-    return { label, USD: cumUSD, JPY: cumJPY, EUR: cumEUR, EM: cumEM };
+  let cumulativeUsd = 0;
+  let cumulativeJpy = 0;
+  let cumulativeEur = 0;
+  let cumulativeEm = 0;
+
+  return ordered.map((event) => {
+    const fx = parseFxState(event.fx_state);
+    cumulativeUsd = Number.parseFloat((cumulativeUsd + (fx.USD ?? 0)).toFixed(3));
+    cumulativeJpy = Number.parseFloat((cumulativeJpy + (fx.JPY ?? 0)).toFixed(3));
+    cumulativeEur = Number.parseFloat((cumulativeEur + (fx.EUR ?? 0)).toFixed(3));
+    cumulativeEm = Number.parseFloat((cumulativeEm + (fx.EM ?? 0)).toFixed(3));
+
+    return {
+      label: event.title.length > 24 ? `${event.title.slice(0, 24)}...` : event.title,
+      USD: cumulativeUsd,
+      JPY: cumulativeJpy,
+      EUR: cumulativeEur,
+      EM: cumulativeEm,
+    };
   });
 }
 
-export function FXMarketChart() {
-  const [data, setData] = useState<ChartPoint[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetch('/api/timeline?limit=20')
-      .then((r) => (r.ok ? r.json() : []))
-      .then((events: TimelineEvent[]) => setData(buildChartData(events)))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+export function FXMarketChart({
+  events,
+  loading,
+}: {
+  events: TimelineEvent[];
+  loading: boolean;
+}) {
+  const data = buildChartData(events);
 
   return (
-    <div className="w-full max-w-6xl">
-      <div className="mb-8">
-        <h1 className="text-[#e8eaed] text-2xl tracking-tight mb-2">FX Cumulative Impact by Currency</h1>
-        <p className="text-[#9aa0a6] text-sm font-light">Cumulative FX delta across scored macro events (USD, JPY, EUR, EM)</p>
+    <section className="rounded-[28px] border border-white/10 bg-slate-950/45 p-5 shadow-[0_20px_60px_rgba(2,8,20,0.34)]">
+      <div className="mb-5 flex items-end justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.28em] text-slate-500">FX Impact Curve</p>
+          <h2 className="mt-2 font-['Space_Grotesk',_'Segoe_UI',_sans-serif] text-2xl font-semibold text-white">
+            Cumulative currency bias from scored events
+          </h2>
+        </div>
+        <p className="max-w-sm text-right text-xs leading-6 text-slate-400">
+          Timeline events are converted into cumulative USD, JPY, EUR, and EM deltas from the live rule-engine output.
+        </p>
       </div>
 
-      <div className="bg-[#12161f] rounded-lg p-8 border border-[#1e2430]">
+      <div className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,_rgba(15,23,42,0.88),_rgba(7,10,18,0.94))] p-4">
         {loading ? (
-          <div className="flex items-center justify-center h-[500px] text-[#9aa0a6] text-sm">Loading FX data…</div>
+          <div className="flex h-[460px] items-center justify-center text-sm text-slate-400">Loading FX data...</div>
         ) : data.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-[500px] text-[#9aa0a6] text-sm gap-2">
-            <span>No scored events yet.</span>
-            <span className="text-xs text-[#6e7681]">Run the pipeline: POST /pipeline/run</span>
-          </div>
+          <div className="flex h-[460px] items-center justify-center text-sm text-slate-400">No scored events yet.</div>
         ) : (
-          <ResponsiveContainer width="100%" height={500}>
-            <LineChart data={data} margin={{ top: 20, right: 30, bottom: 80, left: 60 }}>
-              <CartesianGrid strokeDasharray="0" stroke="#1e2430" horizontal={true} vertical={false} />
-              <XAxis dataKey="label" stroke="#9aa0a6" tick={{ fill: '#9aa0a6', fontSize: 10, fontWeight: 300 }}
-                axisLine={{ stroke: '#1e2430' }} tickLine={false} angle={-40} textAnchor="end" interval={0} />
-              <YAxis stroke="#9aa0a6" tick={{ fill: '#9aa0a6', fontSize: 11, fontWeight: 300 }}
-                axisLine={{ stroke: '#1e2430' }} tickLine={false} />
+          <ResponsiveContainer width="100%" height={460}>
+            <LineChart data={data} margin={{ top: 20, right: 18, bottom: 76, left: 20 }}>
+              <CartesianGrid stroke="#1f2a3d" vertical={false} />
+              <XAxis
+                dataKey="label"
+                stroke="#7b8798"
+                tick={{ fill: "#94a3b8", fontSize: 10 }}
+                axisLine={{ stroke: "#243147" }}
+                tickLine={false}
+                angle={-34}
+                textAnchor="end"
+                interval={0}
+              />
+              <YAxis
+                stroke="#7b8798"
+                tick={{ fill: "#94a3b8", fontSize: 11 }}
+                axisLine={{ stroke: "#243147" }}
+                tickLine={false}
+              />
               <Tooltip
-                contentStyle={{ background: '#1a1f2e', border: '1px solid #2a3040', borderRadius: 6 }}
-                labelStyle={{ color: '#e8eaed', fontSize: 11, marginBottom: 4 }}
-                itemStyle={{ fontSize: 11 }}
+                contentStyle={{
+                  background: "#101827",
+                  border: "1px solid rgba(148, 163, 184, 0.18)",
+                  borderRadius: 16,
+                }}
+                labelStyle={{ color: "#e2e8f0", fontSize: 11 }}
+                itemStyle={{ color: "#cbd5e1", fontSize: 11 }}
                 formatter={(value: number, name: string) => [
-                  value >= 0 ? `+${value.toFixed(3)}` : value.toFixed(3), name,
+                  value >= 0 ? `+${value.toFixed(3)}` : value.toFixed(3),
+                  name,
                 ]}
               />
-              <Line type="monotone" dataKey="USD" stroke="#4a9eff" strokeWidth={2.5} dot={false} name="USD" />
-              <Line type="monotone" dataKey="JPY" stroke="#ff4a9e" strokeWidth={2.5} dot={false} name="JPY" />
-              <Line type="monotone" dataKey="EUR" stroke="#ff9a4a" strokeWidth={2.5} dot={false} name="EUR" />
-              <Line type="monotone" dataKey="EM"  stroke="#4aff9e" strokeWidth={2.5} dot={false} name="EM" />
+              <Line type="monotone" dataKey="USD" stroke="#5ab2ff" strokeWidth={2.6} dot={false} />
+              <Line type="monotone" dataKey="JPY" stroke="#ff7fd1" strokeWidth={2.6} dot={false} />
+              <Line type="monotone" dataKey="EUR" stroke="#ffb266" strokeWidth={2.6} dot={false} />
+              <Line type="monotone" dataKey="EM" stroke="#6ae7b9" strokeWidth={2.6} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         )}
       </div>
 
-      {data.length > 0 && (
-        <div className="flex items-center gap-6 mt-4 flex-wrap">
-          {[{ color: '#4a9eff', label: 'USD' }, { color: '#ff4a9e', label: 'JPY' },
-            { color: '#ff9a4a', label: 'EUR' }, { color: '#4aff9e', label: 'EM' }].map(({ color, label }) => (
-            <div key={label} className="flex items-center gap-2">
-              <div className="w-5 h-0.5" style={{ backgroundColor: color }} />
-              <span className="text-[#9aa0a6] text-xs font-light">{label}</span>
-            </div>
-          ))}
-          <span className="text-[#6e7681] text-xs ml-auto">Source: live BBC news via LLM pipeline</span>
-        </div>
-      )}
+      <div className="mt-4 flex flex-wrap items-center gap-5 text-xs text-slate-400">
+        <LegendChip color="#5ab2ff" label="USD" />
+        <LegendChip color="#ff7fd1" label="JPY" />
+        <LegendChip color="#ffb266" label="EUR" />
+        <LegendChip color="#6ae7b9" label="EM" />
+      </div>
+    </section>
+  );
+}
+
+function LegendChip({ color, label }: { color: string; label: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="h-0.5 w-6 rounded-full" style={{ backgroundColor: color }} />
+      <span>{label}</span>
     </div>
   );
 }
