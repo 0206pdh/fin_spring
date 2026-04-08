@@ -1,35 +1,35 @@
-# Financial Event-Driven Market Impact System Roadmap
+# 금융 이벤트 기반 시장 영향 분석 시스템 로드맵
 
-## Current Position
+## 현재 기준
 
-This repository is now centered on a single Python service stack:
+이 저장소는 이제 단일 Python 서비스 스택 기준으로 정리되어 있습니다.
 
-- FastAPI for HTTP and WebSocket APIs
-- ARQ for async pipeline execution
-- LangGraph for layered LLM normalization
-- PostgreSQL + TimescaleDB + pgvector for event storage, time-series queries, and semantic dedupe
-- Redis for queueing and cache
+- FastAPI: HTTP / WebSocket API
+- ARQ: 비동기 파이프라인 실행
+- LangGraph: 계층형 LLM 정규화
+- PostgreSQL + TimescaleDB + pgvector: 이벤트 저장, 시계열 조회, 의미 기반 중복 감지
+- Redis: 큐와 캐시
 
-The old Spring duplicate backend was removed. The roadmap no longer includes a split Java gateway track.
+기존 Spring 중복 백엔드는 제거했습니다. 따라서 로드맵에서도 Java 게이트웨이 분리 계획은 제외합니다.
 
 ---
 
-## Phase Summary
+## Phase 요약
 
-| Phase | Goal | Status | Notes |
+| Phase | 목표 | 상태 | 비고 |
 |---|---|---|---|
-| Phase 1 | Async pipeline and live broadcast | Done | ARQ, APScheduler, WebSocket are wired into runtime |
-| Phase 2 | Layered LLM normalization | Done | LangGraph chain, strict structured output, evaluator, semantic dedupe connected |
-| Phase 3 | Production-ready data layer | In progress | Alembic, cache, Docker Compose exist; startup still keeps compatibility DDL |
-| Phase 4 | Frontend integration | In progress | Backend live features exist, main React UI still only exposes part of them |
-| Phase 5 | Deployment and observability | Planned | CI/CD, metrics, structured logging, managed deployment |
-| Phase 6 | Grounding and analyst-quality reasoning | Planned | EDGAR grounding, better retrieval, richer evaluation |
+| Phase 1 | 비동기 파이프라인과 실시간 브로드캐스트 | 완료 | ARQ, APScheduler, WebSocket이 실제 런타임에 연결됨 |
+| Phase 2 | 계층형 LLM 정규화 | 완료 | LangGraph 체인, structured output, evaluator, semantic dedupe 연결 완료 |
+| Phase 3 | 프로덕션 지향 데이터 레이어 | 진행 중 | Alembic, 캐시, Docker Compose 존재. startup 호환 DDL은 아직 남아 있음 |
+| Phase 4 | 프론트엔드 통합 | 진행 중 | 백엔드 실시간 기능은 준비됨. 메인 React UI는 아직 일부만 사용 |
+| Phase 5 | 배포 및 관측성 | 예정 | CI/CD, 메트릭, 구조화 로그, 배포 자동화 |
+| Phase 6 | grounding 및 분석 품질 강화 | 예정 | EDGAR grounding, retrieval, 평가 고도화 |
 
 ---
 
-## Phase 1: Async Pipeline and Live Broadcast
+## Phase 1: 비동기 파이프라인과 실시간 브로드캐스트
 
-### Implemented
+### 구현 완료
 
 - `app/main.py`
   - `/pipeline/enqueue`
@@ -41,129 +41,129 @@ The old Spring duplicate backend was removed. The roadmap no longer includes a s
   - `pipeline_batch_job`
   - `seed_replay_job`
 - `app/scheduler.py`
-  - fixed-interval batch enqueue
+  - 고정 주기 배치 enqueue
 - `app/ws_manager.py`
-  - connection tracking and event broadcast
+  - 연결 관리 및 이벤트 브로드캐스트
 
-### Remaining
+### 남은 작업
 
-- tighten worker retry policy and dead-letter behavior
-- add queue depth and job failure metrics
+- 워커 재시도 정책과 dead-letter 처리 정리
+- queue depth / job failure 메트릭 추가
 
 ---
 
-## Phase 2: Layered LLM Normalization
+## Phase 2: 계층형 LLM 정규화
 
-### Goal
+### 목표
 
-Move from a single opaque prompt to an explicit multi-layer LLM pipeline that is:
+단일 불투명 프롬프트에서 벗어나, 다음 조건을 만족하는 명시적 다층 LLM 파이프라인으로 전환합니다.
 
-- inspectable
-- schema-validated
-- reusable across sync and async execution
-- observable in production
+- 추적 가능
+- 스키마 검증 가능
+- sync / async 경로에서 재사용 가능
+- 운영 중 관측 가능
 
-### Implemented
+### 구현 완료
 
 - `app/llm/client.py`
-  - OpenAI SDK wrapper for chat, strict JSON-schema output, and embeddings
+  - OpenAI SDK 기반 chat / strict JSON schema / embedding 래퍼
 - `app/llm/structured.py`
-  - node-level Pydantic schemas:
+  - 노드 단위 Pydantic 스키마
     - `ClassificationOutput`
     - `ChannelOutput`
     - `RationaleOutput`
     - `NormalizationOutput`
 - `app/llm/chain.py`
-  - real LangGraph execution graph:
+  - 실제 LangGraph 실행 그래프
     - `classify`
     - `channel`
     - `rationale`
 - `app/llm/normalize.py`
-  - graph orchestration
-  - output validation and normalization
-  - rationale numeric guardrail
-  - semantic duplicate reuse
-  - embedding persistence
-  - evaluator logging
+  - 그래프 실행 오케스트레이션
+  - 출력 정규화 및 검증
+  - 숫자 근거 guardrail
+  - 의미 기반 중복 재사용
+  - embedding 저장
+  - evaluator 로깅
 - `app/llm/evaluator.py`
-  - consistency logging into `llm_eval_log`
+  - `llm_eval_log` 일관성 로깅
 - `app/store/vector_store.py`
-  - pgvector-backed semantic dedupe
+  - pgvector 기반 semantic dedupe
 
-### Definition of Done for Phase 2
+### Phase 2 완료 조건
 
-- [x] LangGraph chain is used in the actual runtime path
-- [x] node outputs are schema-validated
-- [x] evaluator is called during normalization
-- [x] semantic duplicate detection is called during normalization
-- [x] embeddings are persisted for future retrieval and dedupe
-
----
-
-## Phase 3: Production Data Layer
-
-### Implemented
-
-- Alembic migrations
-- TimescaleDB migration for `scored_events`
-- pgvector migration for `event_embeddings`
-- Redis cache layer for `/heatmap` and `/timeline`
-- Docker Compose stack for API, worker, Redis, and Postgres
-
-### Remaining
-
-- remove legacy schema patching from `init_db()`
-- move all schema ownership fully to Alembic
-- add migration smoke checks to CI
+- [x] LangGraph 체인이 실제 런타임 경로에서 사용됨
+- [x] 각 노드 출력이 스키마 검증됨
+- [x] normalization 시 evaluator가 호출됨
+- [x] normalization 시 semantic duplicate detection이 호출됨
+- [x] 향후 retrieval / dedupe용 embedding이 저장됨
 
 ---
 
-## Phase 4: Frontend Integration
+## Phase 3: 프로덕션 지향 데이터 레이어
 
-### Current State
+### 구현 완료
 
-- main React app renders:
-  - FX chart
+- Alembic 마이그레이션
+- `scored_events`용 TimescaleDB 마이그레이션
+- `event_embeddings`용 pgvector 마이그레이션
+- `/heatmap`, `/timeline`용 Redis 캐시
+- API / worker / Redis / Postgres용 Docker Compose
+
+### 남은 작업
+
+- `init_db()`의 레거시 schema patching 제거
+- 스키마 소유권을 Alembic으로 완전히 이관
+- CI에 migration smoke check 추가
+
+---
+
+## Phase 4: 프론트엔드 통합
+
+### 현재 상태
+
+- 메인 React 앱은 현재 다음만 렌더링함
+  - FX 차트
   - heatmap
-- backend already exposes:
-  - live WebSocket updates
+- 백엔드는 이미 다음을 제공함
+  - 실시간 WebSocket 업데이트
   - timeline
   - insight endpoint
 
-### Remaining
+### 남은 작업
 
-- integrate `/ws/pipeline` into the main React app
-- add timeline and event detail views
-- show rationale, FX reasoning, and sector reasoning in the main UI
-- remove or fold old prototype UI paths into one frontend
-
----
-
-## Phase 5: Deployment and Observability
-
-### Planned
-
-- GitHub Actions for lint, test, image build
-- container publish and deployment pipeline
-- Prometheus/Grafana metrics
-- structured logs for API, worker, and LLM calls
-- alerting around queue lag and LLM failure rate
+- 메인 React 앱에 `/ws/pipeline` 통합
+- timeline / event detail 뷰 추가
+- rationale, FX reasoning, heatmap reasoning을 메인 UI에 노출
+- 중복 프로토타입 프론트엔드를 하나로 정리
 
 ---
 
-## Phase 6: Grounding and Analyst-Quality Reasoning
+## Phase 5: 배포 및 관측성
 
-### Planned
+### 예정
 
-- EDGAR-based grounding for rationale quality
-- retrieval of similar historical events via `event_embeddings`
-- richer evaluation reports beyond consistency rate
-- rationale quality scoring and prompt regression tests
+- GitHub Actions 기반 lint / test / image build
+- 컨테이너 publish 및 배포 파이프라인
+- Prometheus / Grafana 메트릭
+- API / worker / LLM 호출 구조화 로그
+- queue lag / LLM failure rate 알림
 
 ---
 
-## Immediate Priority
+## Phase 6: grounding 및 분석 품질 강화
 
-1. Finish frontend integration against the now-complete Phase 2 backend.
-2. Remove remaining legacy schema bootstrap logic from startup.
-3. Add deployment automation and production observability.
+### 예정
+
+- EDGAR 기반 rationale grounding
+- `event_embeddings`를 활용한 유사 이벤트 retrieval
+- consistency rate를 넘는 평가 리포트
+- rationale 품질 점수화 및 프롬프트 회귀 테스트
+
+---
+
+## 즉시 우선순위
+
+1. 지금 완성된 Phase 2 백엔드를 기준으로 프론트엔드 통합을 마무리합니다.
+2. startup의 레거시 schema bootstrap 로직을 제거합니다.
+3. 배포 자동화와 운영 관측성을 추가합니다.
