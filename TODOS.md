@@ -1,57 +1,60 @@
-# Technical Debt and Next Work
+# 기술 부채와 다음 작업
 
-## Completed in This Update
+## 이번 업데이트에서 완료한 것
 
-- Removed the duplicate Spring backend.
-- Replaced the old single-prompt normalization path with a real LangGraph chain.
-- Switched node outputs to strict schema validation through `app/llm/structured.py`.
-- Wired evaluator logging into the runtime normalization path.
-- Wired pgvector semantic dedupe and embedding persistence into the runtime normalization path.
+- Spring 중복 백엔드 제거
+- 단일 프롬프트 정규화 경로를 실제 LangGraph 체인으로 교체
+- `app/llm/structured.py` 기반 엄격한 스키마 검증 적용
+- evaluator 로깅을 실제 normalization 경로에 연결
+- pgvector semantic dedupe와 embedding 저장을 실제 normalization 경로에 연결
 
-## Active Technical Debt
+## 현재 기술 부채
 
-### Legacy startup DDL in `app/store/db.py`
+### `app/store/db.py`의 레거시 startup DDL
 
-`init_db()` still creates and patches tables at process startup. That was useful for fast iteration, but schema ownership should now sit entirely with Alembic.
+`init_db()`는 아직 프로세스 시작 시 테이블 생성과 컬럼 patching을 수행합니다. 빠른 실험 단계에서는 유용했지만, 이제 스키마 소유권은 Alembic으로 완전히 넘어가야 합니다.
 
-When to act:
-- before Phase 5 CI/CD hardening
+언제 처리할지:
+- Phase 5 CI/CD 고도화 전
 
-What to do:
-- reduce `init_db()` to connectivity/bootstrap checks only
-- fail fast when migrations are missing instead of mutating schema at runtime
+해야 할 것:
+- `init_db()`를 연결 확인 / bootstrap 수준으로 축소
+- 마이그레이션이 누락되면 런타임 patch 대신 즉시 실패하도록 변경
 
 ---
 
-### Frontend still does not consume the full Phase 2 backend
+### 메인 프론트엔드가 아직 Phase 2 백엔드를 충분히 사용하지 않음
 
-The backend now exposes:
-- live pipeline events over WebSocket
-- timeline data
-- event insight and rationale endpoints
+백엔드는 이미 다음을 제공합니다.
 
-The main React app still renders only the chart and heatmap pages.
+- WebSocket 기반 실시간 파이프라인 이벤트
+- timeline 데이터
+- event insight / rationale API
 
-When to act:
+하지만 메인 React 앱은 아직 차트와 heatmap만 렌더링합니다.
+
+언제 처리할지:
 - Phase 4
 
-What to do:
-- add WebSocket client to `src/`
-- add timeline and event detail panels
-- remove duplicate prototype frontends and converge on one app
+해야 할 것:
+- `src/`에 WebSocket 클라이언트 추가
+- timeline / event detail 패널 추가
+- 중복 프로토타입 프론트엔드를 하나로 통합
 
 ---
 
-## Future Work
+## 향후 작업
 
 ### Phase 6: EDGAR Grounding
 
-Ground analyst rationale with real SEC filings via EDGAR full-text search.
+실제 SEC filing을 이용해 analyst rationale을 grounding합니다.
 
-Expected benefit:
-- better company-specific rationale
-- less unsupported narrative generation
-- stronger auditability for market-impact explanations
+기대 효과:
 
-Blocked by:
-- frontend integration and deployment hardening should land first
+- 기업별 rationale 품질 향상
+- 근거 없는 서술 감소
+- 시장 영향 설명의 감사 가능성 강화
+
+선행 조건:
+
+- 프론트엔드 통합과 배포 고도화가 먼저 필요

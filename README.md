@@ -1,95 +1,99 @@
-# Financial Event-Driven Market Impact System
+# 금융 이벤트 기반 시장 영향 분석 시스템
 
-This project ingests financial news, normalizes each event through a layered LLM pipeline, scores the event with a rule engine, and serves the result through REST and WebSocket APIs.
+이 프로젝트는 금융 뉴스를 수집한 뒤, 각 이벤트를 계층형 LLM 파이프라인으로 정규화하고, 룰 엔진으로 FX 바이어스와 섹터 압력을 계산한 후 REST API와 WebSocket으로 제공합니다.
 
-## Stack
+## 기술 스택
 
 - Python 3.11
 - FastAPI
 - ARQ
 - LangGraph
-- OpenAI-compatible LLM API
+- OpenAI 호환 LLM API
 - PostgreSQL
 - TimescaleDB
 - pgvector
 - Redis
 - React + Vite
 
-## Runtime Architecture
+## 런타임 구조
 
-1. News is fetched and stored as `raw_events`.
-2. ARQ workers normalize events through a LangGraph chain.
-3. The rule engine converts the normalized event into FX bias and sector pressure.
-4. Results are persisted to `normalized_events`, `scored_events`, `event_embeddings`, and `llm_eval_log`.
-5. FastAPI serves timeline, heatmap, graph, and insight APIs.
-6. WebSocket clients receive live `event_scored` messages.
+1. 뉴스를 수집해 `raw_events`에 저장합니다.
+2. ARQ 워커가 LangGraph 체인으로 이벤트를 정규화합니다.
+3. 룰 엔진이 정규화 결과를 바탕으로 FX 바이어스와 섹터 압력을 계산합니다.
+4. 결과를 `normalized_events`, `scored_events`, `event_embeddings`, `llm_eval_log`에 저장합니다.
+5. FastAPI가 timeline, heatmap, graph, insight API를 제공합니다.
+6. WebSocket 클라이언트는 실시간 `event_scored` 메시지를 받습니다.
 
-## LLM Layer
+## LLM 레이어
 
-The LLM path is no longer a single prompt.
+이제 LLM 경로는 단일 프롬프트가 아닙니다.
 
-It is now a real three-node LangGraph chain:
+현재는 실제 LangGraph 3노드 체인으로 동작합니다.
 
 - `classify`
-  - event type
-  - policy domain
-  - risk signal
+  - 이벤트 유형
+  - 정책 도메인
+  - 리스크 시그널
   - confidence
 - `channel`
-  - rate signal
-  - geo signal
-  - transmission channels
+  - 금리 시그널
+  - 지정학 시그널
+  - 전이 채널
   - regime
 - `rationale`
-  - keywords
-  - rationale
+  - 키워드
+  - 근거 문장
   - sentiment
-  - direct sector impacts
+  - 직접 섹터 영향
 
-Each node returns strict schema-validated JSON through `app/llm/structured.py`.
+각 노드는 `app/llm/structured.py`의 엄격한 스키마 검증을 통과한 JSON만 반환합니다.
 
-Detailed documentation:
+상세 설명:
 - [docs/llm-layer.md](docs/llm-layer.md)
 
-## Main Paths
+## 주요 경로
 
-- API entrypoint: `app/main.py`
-- Worker: `app/worker.py`
-- LLM client: `app/llm/client.py`
-- LLM schemas: `app/llm/structured.py`
-- LLM graph: `app/llm/chain.py`
-- LLM orchestration: `app/llm/normalize.py`
-- Rule engine: `app/rules/engine.py`
-- Cache: `app/store/cache.py`
-- Vector store: `app/store/vector_store.py`
+- API 진입점: `app/main.py`
+- 워커: `app/worker.py`
+- LLM 클라이언트: `app/llm/client.py`
+- LLM 스키마: `app/llm/structured.py`
+- LLM 그래프: `app/llm/chain.py`
+- LLM 오케스트레이션: `app/llm/normalize.py`
+- 룰 엔진: `app/rules/engine.py`
+- 캐시: `app/store/cache.py`
+- 벡터 저장소: `app/store/vector_store.py`
 
-## Local Run
+## 로컬 실행
 
-### Python API and worker
+### Python API / Worker
+
+가상환경 사용을 권장합니다.
 
 ```bash
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 arq app.worker.WorkerSettings
 ```
 
-### Full stack with Docker Compose
+### Docker Compose 전체 실행
 
 ```bash
 docker compose up --build
 ```
 
-## Tests
+## 테스트
 
 ```bash
 pytest tests/test_rules.py tests/test_normalize.py tests/test_cache.py -v
 ```
 
-## Current Status
+## 현재 상태
 
-- Phase 1 async pipeline: done
-- Phase 2 layered LLM runtime: done
-- Phase 3 data layer hardening: partially done
-- Phase 4 frontend integration: in progress
-- Phase 5 deployment/observability: planned
-- Phase 6 grounding/retrieval upgrades: planned
+- Phase 1 비동기 파이프라인: 완료
+- Phase 2 계층형 LLM 런타임: 완료
+- Phase 3 데이터 레이어 고도화: 일부 완료
+- Phase 4 프론트엔드 통합: 진행 중
+- Phase 5 배포/관측성: 예정
+- Phase 6 grounding / retrieval 고도화: 예정
